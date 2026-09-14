@@ -65,9 +65,9 @@ impl Database {
     }
 
     pub fn list_notes(&self) -> rusqlite::Result<Vec<NoteSummary>> {
-        let mut statement = self.connection.prepare(
-            "SELECT title, color FROM notes ORDER BY updated_at DESC, rowid ASC LIMIT 9",
-        )?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT title, color FROM notes ORDER BY updated_at DESC, rowid ASC")?;
         statement
             .query_map([], |row| {
                 Ok(NoteSummary {
@@ -133,6 +133,12 @@ mod tests {
         let notes = database.list_notes().expect("新增后应能刷新便签列表");
         assert_eq!(notes.len(), 3);
         assert!(notes.iter().any(|note| note.title == "新便签"));
+
+        for _ in 0..8 {
+            database.create_note().expect("应能创建超过九张便签");
+        }
+        let notes = database.list_notes().expect("应能读取全部便签");
+        assert_eq!(notes.len(), 11);
 
         drop(database);
         let _ = std::fs::remove_file(&path);
