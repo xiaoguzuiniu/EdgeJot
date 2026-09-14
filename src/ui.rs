@@ -48,12 +48,12 @@ use windows::{
             Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                DispatchMessageW, GetCursorPos, GetMessageW, GetWindowRect, IDC_ARROW, IDC_HAND,
-                KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_HIDE,
-                SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-                SetTimer, SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA,
-                UpdateLayeredWindow, WINDOW_EX_STYLE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP,
+                DispatchMessageW, GetCursorPos, GetMessageW, GetWindowRect, IDC_HAND, KillTimer,
+                LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE,
+                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetTimer,
+                SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow,
+                WINDOW_EX_STYLE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
                 WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
                 WS_EX_TOPMOST, WS_POPUP,
             },
@@ -292,7 +292,7 @@ pub fn run(database: Database) -> Result<(), Box<dyn Error>> {
             instance,
             PCWSTR(list_class.as_ptr()),
             list_window_proc,
-            IDC_ARROW,
+            IDC_HAND,
         )?;
 
         let dpi = GetDpiForSystem();
@@ -405,6 +405,7 @@ unsafe extern "system" fn pill_window_proc(
     unsafe {
         match message {
             WM_ERASEBKGND => LRESULT(1),
+            WM_SETCURSOR => set_hand_cursor(),
             WM_MOUSEMOVE if !DRAGGING.load(Ordering::Relaxed) => {
                 show_note_list(window);
                 LRESULT(0)
@@ -455,6 +456,7 @@ unsafe extern "system" fn list_window_proc(
     unsafe {
         match message {
             WM_ERASEBKGND => LRESULT(1),
+            WM_SETCURSOR => set_hand_cursor(),
             WM_PAINT => {
                 refresh_note_list(window);
                 LRESULT(0)
@@ -1969,6 +1971,16 @@ fn close_app() {
             let _ = DestroyWindow(list);
         }
     }
+}
+
+fn set_hand_cursor() -> LRESULT {
+    // SAFETY: IDC_HAND is a shared system cursor and does not need to be destroyed.
+    unsafe {
+        if let Ok(cursor) = LoadCursorW(None, IDC_HAND) {
+            let _ = SetCursor(Some(cursor));
+        }
+    }
+    LRESULT(1)
 }
 
 fn load_window(storage: &AtomicIsize) -> HWND {
