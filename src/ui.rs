@@ -19,38 +19,44 @@ use windows::{
                 D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
                 D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
                 D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
-                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Factory,
+                D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                D2D1CreateFactory, ID2D1Factory,
             },
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_WEIGHT, DWRITE_MEASURING_MODE_NATURAL,
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PIXEL_GEOMETRY_FLAT,
-                DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ALIGNMENT_LEADING,
-                DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
-                IDWriteRenderingParams,
+                DWRITE_FONT_WEIGHT, DWRITE_MEASURING_MODE_GDI_CLASSIC,
+                DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT,
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+                DWRITE_PIXEL_GEOMETRY_FLAT, DWRITE_PIXEL_GEOMETRY_RGB,
+                DWRITE_RENDERING_MODE_CLEARTYPE_GDI_CLASSIC,
+                DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC,
+                DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ALIGNMENT,
+                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+                DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
+                DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING,
+                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
+                IDWriteFactory, IDWriteRenderingParams,
             },
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Gdi::{
                 AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-                BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleDC,
-                CreateDIBSection, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush,
-                DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER, DT_LEFT, DT_SINGLELINE,
-                DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint,
-                FF_DONTCARE, FW_DEMIBOLD, FW_NORMAL, FillRect, GetDC, GetMonitorInfoW, HBRUSH, HDC,
-                HFONT, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-                MonitorFromPoint, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, ReleaseDC,
-                SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
+                BeginPaint, BitBlt, CLEARTYPE_NATURAL_QUALITY, CLEARTYPE_QUALITY,
+                CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection, CreateFontW,
+                CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH,
+                DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, FF_DONTCARE, FONT_QUALITY,
+                FW_NORMAL, FillRect, GetDC, GetMonitorInfoW, HBRUSH, HDC, HFONT, HGDIOBJ,
+                InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, OPAQUE,
+                OUT_DEFAULT_PRECIS, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkColor,
+                SetBkMode, SetTextColor, SetWindowRgn,
             },
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Controls::EM_SETCUEBANNER,
             HiDpi::{
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, GetDpiForWindow,
                 SetProcessDpiAwarenessContext,
             },
-            Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus},
+            Input::KeyboardAndMouse::{GetFocus, ReleaseCapture, SetCapture, SetFocus},
             WindowsAndMessaging::{
                 CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, EN_CHANGE, EN_KILLFOCUS, EN_SETFOCUS,
@@ -103,7 +109,7 @@ const MEDIUM_FONT_WEIGHT: i32 = 500;
 const EDITOR_WIDTH_DIP: i32 = 360;
 const EDITOR_HEIGHT_DIP: i32 = 480;
 const EDITOR_PANEL_LEFT_DIP: i32 = 30;
-const EDITOR_GAP_DIP: i32 = 18;
+const EDITOR_GAP_DIP: i32 = 6;
 const EDITOR_TITLE_ID: usize = 1001;
 const EDITOR_BODY_ID: usize = 1002;
 const EDITOR_PLACEHOLDER_ID: usize = 1003;
@@ -131,9 +137,12 @@ static EDITOR_TITLE_PLACEHOLDER: AtomicIsize = AtomicIsize::new(0);
 static EDITOR_BACKGROUND_BRUSH: AtomicIsize = AtomicIsize::new(0);
 static EDITOR_TITLE_FONT: AtomicIsize = AtomicIsize::new(0);
 static EDITOR_BODY_FONT: AtomicIsize = AtomicIsize::new(0);
+static EDITOR_CHROME_FONT: AtomicIsize = AtomicIsize::new(0);
+static EDITOR_SYMBOL_FONT: AtomicIsize = AtomicIsize::new(0);
 static EDITOR_LOADING: AtomicBool = AtomicBool::new(false);
 static EDITOR_DIRTY: AtomicBool = AtomicBool::new(false);
 static EDITOR_CLOSING: AtomicBool = AtomicBool::new(false);
+static EDITOR_MINIMIZED_TO_LIST: AtomicBool = AtomicBool::new(false);
 static ACTIVE_NOTE_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ACTIVE_NOTE_COLOR: OnceLock<Mutex<String>> = OnceLock::new();
 
@@ -144,6 +153,7 @@ struct Color {
     blue: u8,
 }
 
+#[derive(Clone, Copy)]
 struct TextStyle<'a> {
     face: &'a str,
     pixel_height: i32,
@@ -155,6 +165,8 @@ struct TextRasterizer {
     d2d_factory: ID2D1Factory,
     write_factory: IDWriteFactory,
     rendering_params: IDWriteRenderingParams,
+    cleartype_rendering_params: IDWriteRenderingParams,
+    cleartype_grid_fit_params: IDWriteRenderingParams,
 }
 
 impl TextRasterizer {
@@ -170,10 +182,26 @@ impl TextRasterizer {
                 DWRITE_PIXEL_GEOMETRY_FLAT,
                 DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
             )?;
+            let cleartype_rendering_params = write_factory.CreateCustomRenderingParams(
+                2.2,
+                1.0,
+                1.0,
+                DWRITE_PIXEL_GEOMETRY_RGB,
+                DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC,
+            )?;
+            let cleartype_grid_fit_params = write_factory.CreateCustomRenderingParams(
+                2.2,
+                1.15,
+                1.0,
+                DWRITE_PIXEL_GEOMETRY_RGB,
+                DWRITE_RENDERING_MODE_CLEARTYPE_GDI_CLASSIC,
+            )?;
             Ok(Self {
                 d2d_factory,
                 write_factory,
                 rendering_params,
+                cleartype_rendering_params,
+                cleartype_grid_fit_params,
             })
         }
     }
@@ -341,7 +369,7 @@ pub fn run(database: Database) -> Result<(), Box<dyn Error>> {
         register_editor_window_class(instance, PCWSTR(editor_class.as_ptr()), editor_window_proc)?;
 
         let dpi = GetDpiForSystem();
-        let editor_brush = CreateSolidBrush(rgb(250, 247, 239));
+        let editor_brush = CreateSolidBrush(rgb(252, 249, 241));
         EDITOR_BACKGROUND_BRUSH.store(editor_brush.0 as isize, Ordering::Release);
         let pill_width = scale_for_dpi(PILL_WINDOW_WIDTH_DIP, dpi);
         let pill_height = pill_height(note_count, dpi);
@@ -567,7 +595,9 @@ unsafe extern "system" fn editor_window_proc(
     unsafe {
         match message {
             WM_ACTIVATE if wparam.0 & 0xffff == WA_INACTIVE as usize => {
-                close_note_editor(window);
+                if !cursor_inside_editor_group(window) {
+                    close_note_editor(window);
+                }
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
@@ -580,16 +610,17 @@ unsafe extern "system" fn editor_window_proc(
                 let control = HWND(lparam.0 as *mut c_void);
                 let placeholder = load_window(&EDITOR_PLACEHOLDER);
                 let title_placeholder = load_window(&EDITOR_TITLE_PLACEHOLDER);
-                let _ = SetBkColor(dc, rgb(250, 247, 239));
-                let _ = SetTextColor(
-                    dc,
-                    if control == placeholder || control == title_placeholder {
-                        rgb(177, 163, 139)
-                    } else {
-                        rgb(86, 78, 65)
-                    },
-                );
-                let _ = SetBkMode(dc, TRANSPARENT);
+                let title_edit = load_window(&EDITOR_TITLE_EDIT);
+                let _ = SetBkColor(dc, rgb(252, 249, 241));
+                let text_color = if control == placeholder || control == title_placeholder {
+                    rgb(178, 168, 151)
+                } else if control == title_edit {
+                    rgb(61, 57, 49)
+                } else {
+                    rgb(81, 75, 64)
+                };
+                let _ = SetTextColor(dc, text_color);
+                let _ = SetBkMode(dc, OPAQUE);
                 LRESULT(EDITOR_BACKGROUND_BRUSH.load(Ordering::Acquire))
             }
             WM_COMMAND => {
@@ -605,7 +636,10 @@ unsafe extern "system" fn editor_window_proc(
                 let x = lparam.0 as i16 as i32;
                 let y = (lparam.0 >> 16) as i16 as i32;
                 let dpi = GetDpiForWindow(window);
-                if y < scale_for_dpi(45, dpi) && x < scale_for_dpi(278, dpi) {
+                if y >= scale_for_dpi(14, dpi)
+                    && y < scale_for_dpi(46, dpi)
+                    && x < scale_for_dpi(238, dpi)
+                {
                     let _ = ReleaseCapture();
                     let _ = SendMessageW(
                         window,
@@ -620,9 +654,29 @@ unsafe extern "system" fn editor_window_proc(
                 let x = lparam.0 as i16 as i32;
                 let y = (lparam.0 >> 16) as i16 as i32;
                 let dpi = GetDpiForWindow(window);
-                if y < scale_for_dpi(45, dpi) && x >= scale_for_dpi(326, dpi) {
+                if x >= scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi)
+                    && x < scale_for_dpi(EDITOR_WIDTH_DIP - 16, dpi)
+                    && y >= scale_for_dpi(60, dpi)
+                    && y < scale_for_dpi(97, dpi)
+                {
+                    focus_editor_control(load_window(&EDITOR_TITLE_EDIT));
+                } else if x >= scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi)
+                    && x < scale_for_dpi(EDITOR_WIDTH_DIP - 16, dpi)
+                    && y >= scale_for_dpi(116, dpi)
+                    && y < scale_for_dpi(438, dpi)
+                {
+                    focus_editor_control(load_window(&EDITOR_BODY_EDIT));
+                } else if y >= scale_for_dpi(14, dpi)
+                    && y < scale_for_dpi(46, dpi)
+                    && x >= scale_for_dpi(312, dpi)
+                    && x < scale_for_dpi(344, dpi)
+                {
                     close_note_editor(window);
-                } else if y < scale_for_dpi(45, dpi) && x >= scale_for_dpi(278, dpi) {
+                } else if y >= scale_for_dpi(14, dpi)
+                    && y < scale_for_dpi(46, dpi)
+                    && x >= scale_for_dpi(275, dpi)
+                    && x < scale_for_dpi(307, dpi)
+                {
                     hide_note_editor(window);
                 }
                 LRESULT(0)
@@ -639,6 +693,8 @@ unsafe extern "system" fn editor_window_proc(
                 EDITOR_TITLE_PLACEHOLDER.store(0, Ordering::Release);
                 delete_editor_font(&EDITOR_TITLE_FONT);
                 delete_editor_font(&EDITOR_BODY_FONT);
+                delete_editor_font(&EDITOR_CHROME_FONT);
+                delete_editor_font(&EDITOR_SYMBOL_FONT);
                 LRESULT(0)
             }
             _ => DefWindowProcW(window, message, wparam, lparam),
@@ -649,6 +705,8 @@ unsafe extern "system" fn editor_window_proc(
 unsafe fn open_note_editor(list_window: HWND, note: &NoteSummary) {
     // SAFETY: The editor and its controls are created on the current UI thread.
     unsafe {
+        EDITOR_MINIMIZED_TO_LIST.store(false, Ordering::Release);
+        set_list_reveal_target(1.0);
         let mut editor = load_window(&EDITOR_WINDOW);
         if !editor.0.is_null() {
             save_active_note();
@@ -712,8 +770,8 @@ unsafe fn open_note_editor(list_window: HWND, note: &NoteSummary) {
                 0,
                 width + 1,
                 height + 1,
-                scale_for_dpi(18, dpi),
-                scale_for_dpi(18, dpi),
+                scale_for_dpi(34, dpi),
+                scale_for_dpi(34, dpi),
             );
             let _ = SetWindowRgn(editor, Some(region), true);
             if create_editor_controls(editor, instance, dpi).is_err() {
@@ -750,9 +808,9 @@ unsafe fn create_editor_controls(window: HWND, instance: HINSTANCE, dpi: u32) ->
                     | ES_NOHIDESEL as u32,
             ),
             scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
-            scale_for_dpi(55, dpi),
+            scale_for_dpi(60, dpi),
             scale_for_dpi(298, dpi),
-            scale_for_dpi(42, dpi),
+            scale_for_dpi(37, dpi),
             Some(window),
             Some(HMENU(EDITOR_TITLE_ID as *mut c_void)),
             Some(instance),
@@ -772,23 +830,22 @@ unsafe fn create_editor_controls(window: HWND, instance: HINSTANCE, dpi: u32) ->
                     | ES_NOHIDESEL as u32,
             ),
             scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
-            scale_for_dpi(112, dpi),
+            scale_for_dpi(116, dpi),
             scale_for_dpi(298, dpi),
-            scale_for_dpi(326, dpi),
+            scale_for_dpi(322, dpi),
             Some(window),
             Some(HMENU(EDITOR_BODY_ID as *mut c_void)),
             Some(instance),
             None,
         )?;
-        let placeholder_text =
-            utf16("在这里，随手记一点。\r\n\r\n一个灵感、一件待办，\r\n或是不想忘记的小事。");
+        let placeholder_text = utf16("");
         let placeholder = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             PCWSTR(static_class.as_ptr()),
             PCWSTR(placeholder_text.as_ptr()),
-            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | 0x0100),
+            WINDOW_STYLE(WS_CHILD.0 | 0x0100),
             scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
-            scale_for_dpi(113, dpi),
+            scale_for_dpi(117, dpi),
             scale_for_dpi(285, dpi),
             scale_for_dpi(92, dpi),
             Some(window),
@@ -796,16 +853,16 @@ unsafe fn create_editor_controls(window: HWND, instance: HINSTANCE, dpi: u32) ->
             Some(instance),
             None,
         )?;
-        let title_placeholder_text = utf16("给想法起个名字");
+        let title_placeholder_text = utf16("");
         let title_placeholder = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             PCWSTR(static_class.as_ptr()),
             PCWSTR(title_placeholder_text.as_ptr()),
-            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | 0x0100),
+            WINDOW_STYLE(WS_CHILD.0 | 0x0100),
             scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
-            scale_for_dpi(55, dpi),
+            scale_for_dpi(60, dpi),
             scale_for_dpi(298, dpi),
-            scale_for_dpi(42, dpi),
+            scale_for_dpi(37, dpi),
             Some(window),
             Some(HMENU(EDITOR_TITLE_PLACEHOLDER_ID as *mut c_void)),
             Some(instance),
@@ -817,10 +874,14 @@ unsafe fn create_editor_controls(window: HWND, instance: HINSTANCE, dpi: u32) ->
         EDITOR_PLACEHOLDER.store(placeholder.0 as isize, Ordering::Release);
         EDITOR_TITLE_PLACEHOLDER.store(title_placeholder.0 as isize, Ordering::Release);
 
-        let title_font = create_editor_font(scale_for_dpi(20, dpi), FW_DEMIBOLD.0 as i32);
-        let body_font = create_editor_font(scale_for_dpi(15, dpi), FW_NORMAL.0 as i32);
+        let title_font = create_editor_font(scale_for_dpi(20, dpi), 700);
+        let body_font = create_editor_font(scale_for_dpi(15, dpi), 500);
+        let chrome_font = create_editor_font(scale_for_dpi(10, dpi), FW_NORMAL.0 as i32);
+        let symbol_font = create_editor_symbol_font(scale_for_dpi(17, dpi));
         EDITOR_TITLE_FONT.store(title_font.0 as isize, Ordering::Release);
         EDITOR_BODY_FONT.store(body_font.0 as isize, Ordering::Release);
+        EDITOR_CHROME_FONT.store(chrome_font.0 as isize, Ordering::Release);
+        EDITOR_SYMBOL_FONT.store(symbol_font.0 as isize, Ordering::Release);
         let _ = SendMessageW(
             title,
             WM_SETFONT,
@@ -841,13 +902,6 @@ unsafe fn create_editor_controls(window: HWND, instance: HINSTANCE, dpi: u32) ->
             Some(WPARAM(title_font.0 as usize)),
             Some(LPARAM(1)),
         );
-        let cue = utf16("给想法起个名字");
-        let _ = SendMessageW(
-            title,
-            EM_SETCUEBANNER,
-            Some(WPARAM(0)),
-            Some(LPARAM(cue.as_ptr() as isize)),
-        );
         Ok(())
     }
 }
@@ -856,33 +910,17 @@ unsafe fn handle_editor_command(window: HWND, wparam: WPARAM) {
     let control_id = wparam.0 & 0xffff;
     let notification = (wparam.0 >> 16) & 0xffff;
     let body = load_window(&EDITOR_BODY_EDIT);
-    let placeholder = load_window(&EDITOR_PLACEHOLDER);
     let title_edit = load_window(&EDITOR_TITLE_EDIT);
-    let title_placeholder = load_window(&EDITOR_TITLE_PLACEHOLDER);
 
     // SAFETY: All referenced child windows belong to this editor window.
     unsafe {
-        if control_id == EDITOR_PLACEHOLDER_ID {
-            let _ = ShowWindow(placeholder, SW_HIDE);
-            if !body.0.is_null() {
-                let _ = SetFocus(Some(body));
-            }
-            return;
-        }
-        if control_id == EDITOR_TITLE_PLACEHOLDER_ID {
-            let _ = ShowWindow(title_placeholder, SW_HIDE);
-            if !title_edit.0.is_null() {
-                let _ = SetFocus(Some(title_edit));
-            }
-            return;
-        }
         if control_id == EDITOR_TITLE_ID && notification == EN_SETFOCUS as usize {
-            let _ = ShowWindow(title_placeholder, SW_HIDE);
+            let _ = ShowWindow(title_edit, SW_SHOW);
         } else if control_id == EDITOR_TITLE_ID && notification == EN_KILLFOCUS as usize {
             update_title_placeholder();
         }
         if control_id == EDITOR_BODY_ID && notification == EN_SETFOCUS as usize {
-            let _ = ShowWindow(placeholder, SW_HIDE);
+            let _ = ShowWindow(body, SW_SHOW);
         } else if control_id == EDITOR_BODY_ID && notification == EN_KILLFOCUS as usize {
             update_body_placeholder();
         }
@@ -916,6 +954,10 @@ unsafe fn load_note_into_editor(note: &NoteSummary) {
         let body_text = utf16(&note.content);
         let title_edit = load_window(&EDITOR_TITLE_EDIT);
         let body_edit = load_window(&EDITOR_BODY_EDIT);
+        let editor = load_window(&EDITOR_WINDOW);
+        if !editor.0.is_null() {
+            let _ = SetFocus(Some(editor));
+        }
         if !title_edit.0.is_null() {
             let _ = SetWindowTextW(title_edit, PCWSTR(title_text.as_ptr()));
         }
@@ -1030,6 +1072,7 @@ unsafe fn close_note_editor(window: HWND) {
         if EDITOR_CLOSING.swap(true, Ordering::AcqRel) {
             return;
         }
+        EDITOR_MINIMIZED_TO_LIST.store(false, Ordering::Release);
         let _ = KillTimer(Some(window), EDITOR_SAVE_TIMER_ID);
         save_active_note();
         let _ = DestroyWindow(window);
@@ -1052,13 +1095,10 @@ unsafe fn hide_note_editor(window: HWND) {
         if EDITOR_CLOSING.swap(true, Ordering::AcqRel) {
             return;
         }
+        EDITOR_MINIMIZED_TO_LIST.store(true, Ordering::Release);
         let _ = KillTimer(Some(window), EDITOR_SAVE_TIMER_ID);
         save_active_note();
         let _ = ShowWindow(window, SW_HIDE);
-        let list = load_window(&LIST_WINDOW);
-        if !list.0.is_null() {
-            hide_note_list(list);
-        }
         EDITOR_CLOSING.store(false, Ordering::Release);
     }
 }
@@ -1089,7 +1129,25 @@ unsafe fn paint_editor(window: HWND) {
         let _ = FillRect(dc, &sidebar, sidebar_brush);
         let _ = DeleteObject(HGDIOBJ(sidebar_brush.0));
 
-        let line_brush = CreateSolidBrush(rgb(225, 217, 204));
+        let dash_color = blend_colors(Color::new(75, 71, 59), sidebar_color, 96.0 / 255.0);
+        let dash_brush = CreateSolidBrush(rgb(dash_color.red, dash_color.green, dash_color.blue));
+        let dash_x = scale_for_dpi(29, dpi);
+        let dash_height = scale_for_dpi(5, dpi).max(1);
+        let dash_step = scale_for_dpi(10, dpi).max(1);
+        let mut dash_y = scale_for_dpi(18, dpi);
+        while dash_y < client.bottom - scale_for_dpi(18, dpi) {
+            let dash = RECT {
+                left: dash_x,
+                top: dash_y,
+                right: dash_x + scale_for_dpi(1, dpi).max(1),
+                bottom: (dash_y + dash_height).min(client.bottom),
+            };
+            let _ = FillRect(dc, &dash, dash_brush);
+            dash_y += dash_step;
+        }
+        let _ = DeleteObject(HGDIOBJ(dash_brush.0));
+
+        let line_brush = CreateSolidBrush(rgb(232, 225, 211));
         let divider = RECT {
             left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
             top: scale_for_dpi(103, dpi),
@@ -1099,7 +1157,9 @@ unsafe fn paint_editor(window: HWND) {
         let _ = FillRect(dc, &divider, line_brush);
         let _ = DeleteObject(HGDIOBJ(line_brush.0));
 
-        let border_brush = CreateSolidBrush(rgb(219, 211, 199));
+        let border_color = darken_color(sidebar_color, 1.05);
+        let border_brush =
+            CreateSolidBrush(rgb(border_color.red, border_color.green, border_color.blue));
         for border in [
             RECT {
                 left: 0,
@@ -1130,135 +1190,443 @@ unsafe fn paint_editor(window: HWND) {
         }
         let _ = DeleteObject(HGDIOBJ(border_brush.0));
 
-        draw_filled_ellipse(
+        let indicator_border = darken_color(sidebar_color, 1.2);
+        let indicator_surface = lighten_color(sidebar_color, 1.03);
+        let indicator_center = darken_color(sidebar_color, 1.35);
+        let _ = draw_antialiased_circle_stack(
             dc,
             RECT {
-                left: scale_for_dpi(249, dpi),
+                left: scale_for_dpi(247, dpi),
                 top: scale_for_dpi(23, dpi),
-                right: scale_for_dpi(259, dpi),
-                bottom: scale_for_dpi(33, dpi),
+                right: scale_for_dpi(261, dpi),
+                bottom: scale_for_dpi(37, dpi),
             },
-            rgb(184, 198, 208),
-        );
-        draw_filled_ellipse(
-            dc,
-            RECT {
-                left: scale_for_dpi(251, dpi),
-                top: scale_for_dpi(25, dpi),
-                right: scale_for_dpi(257, dpi),
-                bottom: scale_for_dpi(31, dpi),
-            },
-            rgb(137, 164, 184),
+            Color::new(252, 249, 241),
+            &[
+                (scale_for_dpi(6, dpi) as f32, indicator_border),
+                (scale_for_dpi(5, dpi) as f32, indicator_surface),
+                (scale_for_dpi(4, dpi) as f32, indicator_center),
+            ],
         );
 
-        let body_font = load_editor_font(&EDITOR_BODY_FONT);
-        let previous_font = if body_font.0.is_null() {
-            HGDIOBJ::default()
-        } else {
-            SelectObject(dc, HGDIOBJ(body_font.0))
-        };
-        let _ = SetBkMode(dc, TRANSPARENT);
-        let _ = SetTextColor(dc, rgb(118, 105, 83));
-        draw_editor_text(
+        let _ = draw_antialiased_circle_stack(
             dc,
-            "速\n记\n胶\n囊",
             RECT {
-                left: 0,
-                top: scale_for_dpi(22, dpi),
-                right: scale_for_dpi(EDITOR_PANEL_LEFT_DIP, dpi),
-                bottom: scale_for_dpi(122, dpi),
+                left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 15, dpi),
+                top: client.bottom - scale_for_dpi(23, dpi),
+                right: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 22, dpi),
+                bottom: client.bottom - scale_for_dpi(16, dpi),
             },
-            DT_CENTER | DT_WORDBREAK,
+            Color::new(252, 249, 241),
+            &[(
+                scale_for_dpi(2, dpi) as f32 + 0.5,
+                Color::new(145, 167, 129),
+            )],
         );
-        let _ = SetTextColor(dc, rgb(74, 76, 70));
-        draw_editor_text(
-            dc,
-            "−",
-            RECT {
-                left: scale_for_dpi(278, dpi),
-                top: 0,
-                right: scale_for_dpi(322, dpi),
-                bottom: scale_for_dpi(45, dpi),
-            },
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
-        draw_editor_text(
-            dc,
-            "×",
-            RECT {
-                left: scale_for_dpi(326, dpi),
-                top: 0,
-                right: client.right,
-                bottom: scale_for_dpi(45, dpi),
-            },
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
-
-        let status_dot = CreateSolidBrush(rgb(126, 174, 111));
-        let dot = RECT {
-            left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
-            top: client.bottom - scale_for_dpi(21, dpi),
-            right: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 20, dpi),
-            bottom: client.bottom - scale_for_dpi(17, dpi),
-        };
-        let _ = FillRect(dc, &dot, status_dot);
-        let _ = DeleteObject(HGDIOBJ(status_dot.0));
-        let _ = SetTextColor(dc, rgb(155, 145, 127));
-        draw_editor_text(
-            dc,
-            "已保存到本机",
-            RECT {
-                left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 27, dpi),
-                top: client.bottom - scale_for_dpi(32, dpi),
-                right: scale_for_dpi(190, dpi),
-                bottom: client.bottom - scale_for_dpi(7, dpi),
-            },
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-        );
-        let count = window_text(load_window(&EDITOR_BODY_EDIT)).chars().count();
-        draw_editor_text(
-            dc,
-            &format!("{count} 字符"),
-            RECT {
-                left: client.right - scale_for_dpi(90, dpi),
-                top: client.bottom - scale_for_dpi(32, dpi),
-                right: client.right - scale_for_dpi(14, dpi),
-                bottom: client.bottom - scale_for_dpi(7, dpi),
-            },
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-        );
-        if !previous_font.0.is_null() {
-            let _ = SelectObject(dc, previous_font);
-        }
+        let _ = paint_editor_text(dc, client, dpi);
         let _ = EndPaint(window, &paint);
     }
 }
 
-fn draw_editor_text(
-    dc: HDC,
-    text: &str,
-    mut rect: RECT,
-    format: windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT,
-) {
-    let mut text = text.encode_utf16().collect::<Vec<_>>();
-    // SAFETY: The UTF-16 buffer and rectangle remain valid for the drawing call.
+unsafe fn paint_editor_text(dc: HDC, client: RECT, dpi: u32) -> WinResult<()> {
+    // SAFETY: Each text run is rendered into an opaque ClearType DIB matching its background.
     unsafe {
-        let _ = DrawTextW(dc, &mut text, &mut rect, format);
+        let width = client.right - client.left;
+        let height = client.bottom - client.top;
+        if width <= 0 || height <= 0 {
+            return Ok(());
+        }
+        let rasterizer = TextRasterizer::new()?;
+        let paper = Color::new(252, 249, 241);
+        let sidebar = active_editor_color();
+        let draw = |text: &str,
+                    rect: RECT,
+                    style: TextStyle<'_>,
+                    background: Color,
+                    alignment: DWRITE_TEXT_ALIGNMENT,
+                    paragraph: DWRITE_PARAGRAPH_ALIGNMENT,
+                    wrapping: DWRITE_WORD_WRAPPING,
+                    grid_fit: bool| {
+            draw_opaque_cleartype_text(
+                &rasterizer,
+                dc,
+                text,
+                rect,
+                style,
+                background,
+                alignment,
+                paragraph,
+                wrapping,
+                grid_fit,
+            )
+        };
+
+        let brand_style = TextStyle {
+            face: UI_FONT_FACE,
+            pixel_height: scale_for_dpi(10, dpi),
+            weight: NORMAL_FONT_WEIGHT,
+            color: Color::new(121, 107, 69),
+        };
+        for (index, character) in ["速", "记", "胶", "囊"].iter().enumerate() {
+            let top = scale_for_dpi(22 + index as i32 * 14, dpi);
+            draw(
+                character,
+                RECT {
+                    left: 0,
+                    top,
+                    right: scale_for_dpi(29, dpi),
+                    bottom: top + scale_for_dpi(14, dpi),
+                },
+                brand_style,
+                sidebar,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_WORD_WRAPPING_NO_WRAP,
+                true,
+            )?;
+        }
+
+        let symbol_style = TextStyle {
+            face: SYMBOL_FONT_FACE,
+            pixel_height: scale_for_dpi(17, dpi),
+            weight: NORMAL_FONT_WEIGHT,
+            color: Color::new(74, 76, 70),
+        };
+        for (text, left, right) in [("−", 275, 307), ("×", 312, 344)] {
+            draw(
+                text,
+                RECT {
+                    left: scale_for_dpi(left, dpi),
+                    top: scale_for_dpi(14, dpi),
+                    right: scale_for_dpi(right, dpi),
+                    bottom: scale_for_dpi(46, dpi),
+                },
+                symbol_style,
+                paper,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_WORD_WRAPPING_NO_WRAP,
+                true,
+            )?;
+        }
+
+        let title_control = load_window(&EDITOR_TITLE_EDIT);
+        if !title_control.0.is_null() && !IsWindowVisible(title_control).as_bool() {
+            let title = window_text(title_control);
+            draw(
+                if title.is_empty() {
+                    "给想法起个名字"
+                } else {
+                    &title
+                },
+                RECT {
+                    left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
+                    top: scale_for_dpi(58, dpi),
+                    right: width - scale_for_dpi(16, dpi),
+                    bottom: scale_for_dpi(97, dpi),
+                },
+                TextStyle {
+                    face: UI_FONT_FACE,
+                    pixel_height: scale_for_dpi(20, dpi),
+                    weight: 600,
+                    color: if title.is_empty() {
+                        Color::new(178, 168, 151)
+                    } else {
+                        Color::new(61, 57, 49)
+                    },
+                },
+                paper,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_WORD_WRAPPING_NO_WRAP,
+                false,
+            )?;
+        }
+
+        let body_control = load_window(&EDITOR_BODY_EDIT);
+        let body = window_text(body_control);
+        if !body_control.0.is_null() && !IsWindowVisible(body_control).as_bool() {
+            draw(
+                if body.is_empty() {
+                    "在这里，随手记一点。\n\n一个灵感、一件待办，\n或是不想忘记的小事。"
+                } else {
+                    &body
+                },
+                RECT {
+                    left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 16, dpi),
+                    top: scale_for_dpi(118, dpi),
+                    right: width - scale_for_dpi(16, dpi),
+                    bottom: height - scale_for_dpi(42, dpi),
+                },
+                TextStyle {
+                    face: UI_FONT_FACE,
+                    pixel_height: scale_for_dpi(15, dpi),
+                    weight: NORMAL_FONT_WEIGHT,
+                    color: if body.is_empty() {
+                        Color::new(178, 168, 151)
+                    } else {
+                        Color::new(81, 75, 64)
+                    },
+                },
+                paper,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+                DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+                DWRITE_WORD_WRAPPING_WRAP,
+                false,
+            )?;
+        }
+
+        let status_style = TextStyle {
+            face: UI_FONT_FACE,
+            pixel_height: scale_for_dpi(10, dpi),
+            weight: NORMAL_FONT_WEIGHT,
+            color: Color::new(154, 146, 132),
+        };
+        draw(
+            "已保存到本机",
+            RECT {
+                left: scale_for_dpi(EDITOR_PANEL_LEFT_DIP + 27, dpi),
+                top: height - scale_for_dpi(32, dpi),
+                right: scale_for_dpi(190, dpi),
+                bottom: height - scale_for_dpi(7, dpi),
+            },
+            status_style,
+            paper,
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
+            true,
+        )?;
+        let count_text = format!("{} 字符", body.chars().count());
+        draw(
+            &count_text,
+            RECT {
+                left: width - scale_for_dpi(90, dpi),
+                top: height - scale_for_dpi(32, dpi),
+                right: width - scale_for_dpi(14, dpi),
+                bottom: height - scale_for_dpi(7, dpi),
+            },
+            TextStyle {
+                color: Color::new(170, 161, 147),
+                ..status_style
+            },
+            paper,
+            DWRITE_TEXT_ALIGNMENT_TRAILING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
+            true,
+        )?;
+        Ok(())
     }
 }
 
-fn draw_filled_ellipse(dc: HDC, rect: RECT, color: COLORREF) {
-    // SAFETY: Temporary GDI objects are restored and released before returning.
+unsafe fn draw_opaque_cleartype_text(
+    renderer: &TextRasterizer,
+    destination: HDC,
+    text: &str,
+    rect: RECT,
+    style: TextStyle<'_>,
+    background: Color,
+    alignment: DWRITE_TEXT_ALIGNMENT,
+    paragraph: DWRITE_PARAGRAPH_ALIGNMENT,
+    wrapping: DWRITE_WORD_WRAPPING,
+    grid_fit: bool,
+) -> WinResult<()> {
+    // SAFETY: The temporary opaque DIB is copied before all GDI and D2D resources are released.
     unsafe {
-        let brush = CreateSolidBrush(color);
-        let pen = CreatePen(PS_SOLID, 1, color);
-        let previous_brush = SelectObject(dc, HGDIOBJ(brush.0));
-        let previous_pen = SelectObject(dc, HGDIOBJ(pen.0));
-        let _ = Ellipse(dc, rect.left, rect.top, rect.right, rect.bottom);
-        let _ = SelectObject(dc, previous_pen);
-        let _ = SelectObject(dc, previous_brush);
-        let _ = DeleteObject(HGDIOBJ(pen.0));
-        let _ = DeleteObject(HGDIOBJ(brush.0));
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            return Ok(());
+        }
+        let face = utf16(style.face);
+        let locale = utf16("zh-CN");
+        let text_format = renderer.write_factory.CreateTextFormat(
+            PCWSTR(face.as_ptr()),
+            None,
+            DWRITE_FONT_WEIGHT(style.weight),
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            style.pixel_height as f32,
+            PCWSTR(locale.as_ptr()),
+        )?;
+        text_format.SetTextAlignment(alignment)?;
+        text_format.SetParagraphAlignment(paragraph)?;
+        text_format.SetWordWrapping(wrapping)?;
+        let trimming = DWRITE_TRIMMING {
+            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+            delimiter: 0,
+            delimiterCount: 0,
+        };
+        let ellipsis = renderer
+            .write_factory
+            .CreateEllipsisTrimmingSign(&text_format)?;
+        text_format.SetTrimming(&trimming, &ellipsis)?;
+
+        let memory_dc = CreateCompatibleDC(Some(destination));
+        let mut bits: *mut c_void = ptr::null_mut();
+        let bitmap = CreateDIBSection(
+            Some(destination),
+            &top_down_bitmap_info(width, height),
+            DIB_RGB_COLORS,
+            &mut bits,
+            None,
+            0,
+        )?;
+        let previous = SelectObject(memory_dc, HGDIOBJ(bitmap.0));
+        let properties = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_IGNORE,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+        let render_target = renderer.d2d_factory.CreateDCRenderTarget(&properties)?;
+        let local_rect = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        render_target.BindDC(memory_dc, &local_rect)?;
+        render_target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+        render_target.SetTextRenderingParams(if grid_fit {
+            &renderer.cleartype_grid_fit_params
+        } else {
+            &renderer.cleartype_rendering_params
+        });
+        let text_color = d2d_color(style.color);
+        let background_color = d2d_color(background);
+        let brush = render_target.CreateSolidColorBrush(&text_color, None)?;
+        let layout = D2D_RECT_F {
+            left: 0.0,
+            top: 0.0,
+            right: width as f32,
+            bottom: height as f32,
+        };
+        let utf16_text = text.encode_utf16().collect::<Vec<_>>();
+        render_target.BeginDraw();
+        render_target.Clear(Some(&background_color));
+        render_target.DrawText(
+            &utf16_text,
+            &text_format,
+            &layout,
+            &brush,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            if grid_fit {
+                DWRITE_MEASURING_MODE_GDI_CLASSIC
+            } else {
+                DWRITE_MEASURING_MODE_NATURAL
+            },
+        );
+        render_target.EndDraw(None, None)?;
+        BitBlt(
+            destination,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            Some(memory_dc),
+            0,
+            0,
+            SRCCOPY,
+        )?;
+        let _ = SelectObject(memory_dc, previous);
+        let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        let _ = DeleteDC(memory_dc);
+        Ok(())
+    }
+}
+
+fn d2d_color(color: Color) -> D2D1_COLOR_F {
+    D2D1_COLOR_F {
+        r: color.red as f32 / 255.0,
+        g: color.green as f32 / 255.0,
+        b: color.blue as f32 / 255.0,
+        a: 1.0,
+    }
+}
+
+fn draw_antialiased_circle_stack(
+    dc: HDC,
+    rect: RECT,
+    background: Color,
+    layers: &[(f32, Color)],
+) -> WinResult<()> {
+    // SAFETY: The temporary opaque DIB is copied before its GDI objects are released.
+    unsafe {
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            return Ok(());
+        }
+        let samples = ANTIALIAS_SAMPLES;
+        let sample_count = (samples * samples) as u32;
+        let center_x = width as f32 / 2.0;
+        let center_y = height as f32 / 2.0;
+        let mut pixels = vec![0_u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let mut red = 0_u32;
+                let mut green = 0_u32;
+                let mut blue = 0_u32;
+                for sample_y in 0..samples {
+                    for sample_x in 0..samples {
+                        let px = x as f32 + (sample_x as f32 + 0.5) / samples as f32;
+                        let py = y as f32 + (sample_y as f32 + 0.5) / samples as f32;
+                        let dx = px - center_x;
+                        let dy = py - center_y;
+                        let distance_squared = dx * dx + dy * dy;
+                        let mut color = background;
+                        for (radius, layer_color) in layers {
+                            if distance_squared <= radius * radius {
+                                color = *layer_color;
+                            }
+                        }
+                        red += color.red as u32;
+                        green += color.green as u32;
+                        blue += color.blue as u32;
+                    }
+                }
+                let offset = ((y * width + x) * 4) as usize;
+                pixels[offset] = (blue / sample_count) as u8;
+                pixels[offset + 1] = (green / sample_count) as u8;
+                pixels[offset + 2] = (red / sample_count) as u8;
+                pixels[offset + 3] = 255;
+            }
+        }
+
+        let memory_dc = CreateCompatibleDC(Some(dc));
+        let mut bits: *mut c_void = ptr::null_mut();
+        let bitmap = CreateDIBSection(
+            Some(dc),
+            &top_down_bitmap_info(width, height),
+            DIB_RGB_COLORS,
+            &mut bits,
+            None,
+            0,
+        )?;
+        ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), pixels.len());
+        let previous = SelectObject(memory_dc, HGDIOBJ(bitmap.0));
+        BitBlt(
+            dc,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            Some(memory_dc),
+            0,
+            0,
+            SRCCOPY,
+        )?;
+        let _ = SelectObject(memory_dc, previous);
+        let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        let _ = DeleteDC(memory_dc);
+        Ok(())
     }
 }
 
@@ -1270,8 +1638,13 @@ unsafe fn update_body_placeholder() {
     }
     // SAFETY: Both handles are live child controls of the editor.
     unsafe {
-        let show = GetWindowTextLengthW(body) == 0;
-        let _ = ShowWindow(placeholder, if show { SW_SHOW } else { SW_HIDE });
+        let _ = ShowWindow(placeholder, SW_HIDE);
+        let focused = GetFocus() == body;
+        let _ = ShowWindow(body, if focused { SW_SHOW } else { SW_HIDE });
+        let editor = load_window(&EDITOR_WINDOW);
+        if !editor.0.is_null() {
+            let _ = InvalidateRect(Some(editor), None, false);
+        }
     }
 }
 
@@ -1283,8 +1656,23 @@ unsafe fn update_title_placeholder() {
     }
     // SAFETY: Both handles are live child controls of the editor.
     unsafe {
-        let show = GetWindowTextLengthW(title) == 0;
-        let _ = ShowWindow(placeholder, if show { SW_SHOW } else { SW_HIDE });
+        let _ = ShowWindow(placeholder, SW_HIDE);
+        let focused = GetFocus() == title;
+        let _ = ShowWindow(title, if focused { SW_SHOW } else { SW_HIDE });
+        let editor = load_window(&EDITOR_WINDOW);
+        if !editor.0.is_null() {
+            let _ = InvalidateRect(Some(editor), None, false);
+        }
+    }
+}
+
+unsafe fn focus_editor_control(control: HWND) {
+    // SAFETY: The child control is shown before it receives keyboard focus.
+    unsafe {
+        if !control.0.is_null() {
+            let _ = ShowWindow(control, SW_SHOW);
+            let _ = SetFocus(Some(control));
+        }
     }
 }
 
@@ -1317,15 +1705,34 @@ unsafe fn create_editor_font(height: i32, weight: i32) -> HFONT {
             DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
+            FONT_QUALITY(CLEARTYPE_NATURAL_QUALITY as u8),
             DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
             PCWSTR(face.as_ptr()),
         )
     }
 }
 
-fn load_editor_font(storage: &AtomicIsize) -> HFONT {
-    HFONT(storage.load(Ordering::Acquire) as *mut c_void)
+unsafe fn create_editor_symbol_font(height: i32) -> HFONT {
+    let face = utf16(SYMBOL_FONT_FACE);
+    // SAFETY: The face-name pointer remains valid for the duration of CreateFontW.
+    unsafe {
+        CreateFontW(
+            -height,
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+            PCWSTR(face.as_ptr()),
+        )
+    }
 }
 
 fn editor_background_brush() -> HBRUSH {
@@ -1347,8 +1754,85 @@ fn editor_is_visible() -> bool {
     !editor.0.is_null() && unsafe { IsWindowVisible(editor).as_bool() }
 }
 
+unsafe fn cursor_inside_editor_group(editor: HWND) -> bool {
+    // SAFETY: Window handles are checked by GetWindowRect before their bounds are used.
+    unsafe {
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_err() {
+            return false;
+        }
+        cursor_inside_window(cursor, editor)
+            || cursor_inside_window(cursor, load_window(&LIST_WINDOW))
+    }
+}
+
+unsafe fn cursor_inside_window(cursor: POINT, window: HWND) -> bool {
+    if window.0.is_null() {
+        return false;
+    }
+    let mut bounds = RECT::default();
+    // SAFETY: GetWindowRect validates the supplied HWND.
+    unsafe { GetWindowRect(window, &mut bounds).is_ok() && point_inside_rect(cursor, bounds) }
+}
+
+fn point_inside_rect(point: POINT, rect: RECT) -> bool {
+    point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
+}
+
+unsafe fn cursor_inside_minimized_editor_bridge(cursor: POINT, list_bounds: RECT) -> bool {
+    if !EDITOR_MINIMIZED_TO_LIST.load(Ordering::Acquire) {
+        return false;
+    }
+    let editor = load_window(&EDITOR_WINDOW);
+    if editor.0.is_null() {
+        return false;
+    }
+    let mut editor_bounds = RECT::default();
+    // SAFETY: The hidden editor HWND remains live until it is explicitly closed.
+    if unsafe { GetWindowRect(editor, &mut editor_bounds) }.is_err() {
+        return false;
+    }
+    point_inside_rect(
+        cursor,
+        RECT {
+            left: editor_bounds.left.min(list_bounds.left),
+            top: editor_bounds.top.min(list_bounds.top),
+            right: editor_bounds.right.max(list_bounds.right),
+            bottom: editor_bounds.bottom.max(list_bounds.bottom),
+        },
+    )
+}
+
 const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
     COLORREF(red as u32 | ((green as u32) << 8) | ((blue as u32) << 16))
+}
+
+fn darken_color(color: Color, factor: f32) -> Color {
+    Color::new(
+        (color.red as f32 / factor).round() as u8,
+        (color.green as f32 / factor).round() as u8,
+        (color.blue as f32 / factor).round() as u8,
+    )
+}
+
+fn lighten_color(color: Color, factor: f32) -> Color {
+    Color::new(
+        (color.red as f32 * factor).round().min(255.0) as u8,
+        (color.green as f32 * factor).round().min(255.0) as u8,
+        (color.blue as f32 * factor).round().min(255.0) as u8,
+    )
+}
+
+fn blend_colors(foreground: Color, background: Color, opacity: f32) -> Color {
+    let opacity = opacity.clamp(0.0, 1.0);
+    let mix = |front: u8, back: u8| {
+        (front as f32 * opacity + back as f32 * (1.0 - opacity)).round() as u8
+    };
+    Color::new(
+        mix(foreground.red, background.red),
+        mix(foreground.green, background.green),
+        mix(foreground.blue, background.blue),
+    )
 }
 
 unsafe fn show_note_list(pill_window: HWND) {
@@ -1417,6 +1901,7 @@ unsafe fn finish_hiding_note_list(list_window: HWND) {
     unsafe {
         let _ = KillTimer(Some(list_window), 1);
         let _ = ShowWindow(list_window, SW_HIDE);
+        EDITOR_MINIMIZED_TO_LIST.store(false, Ordering::Release);
         reset_list_scroll_animation();
         reset_card_hover_progress();
         reset_animation_clock();
@@ -1435,11 +1920,12 @@ unsafe fn update_note_list_interaction(window: HWND) {
         if GetCursorPos(&mut cursor).is_err() || GetWindowRect(window, &mut bounds).is_err() {
             return;
         }
-        let cursor_inside = cursor.x >= bounds.left
-            && cursor.x < bounds.right
-            && cursor.y >= bounds.top
-            && cursor.y < bounds.bottom;
-        if !cursor_inside && !editor_is_visible() {
+        let cursor_inside = point_inside_rect(cursor, bounds);
+        if cursor_inside {
+            EDITOR_MINIMIZED_TO_LIST.store(false, Ordering::Release);
+        }
+        let inside_minimized_bridge = cursor_inside_minimized_editor_bridge(cursor, bounds);
+        if !cursor_inside && !editor_is_visible() && !inside_minimized_bridge {
             hide_note_list(window);
         }
 
@@ -2157,9 +2643,43 @@ unsafe fn draw_text_layer(
     rect: RECT,
     style: TextStyle<'_>,
 ) -> WinResult<()> {
+    // SAFETY: Existing list labels keep their established alignment and truncation.
+    unsafe {
+        draw_text_layer_formatted(
+            renderer,
+            pixels,
+            width,
+            height,
+            text,
+            rect,
+            style,
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
+        )
+    }
+}
+
+unsafe fn draw_text_layer_formatted(
+    renderer: &TextRasterizer,
+    pixels: &mut [u8],
+    width: i32,
+    height: i32,
+    text: &str,
+    rect: RECT,
+    style: TextStyle<'_>,
+    alignment: DWRITE_TEXT_ALIGNMENT,
+    paragraph: DWRITE_PARAGRAPH_ALIGNMENT,
+    wrapping: DWRITE_WORD_WRAPPING,
+) -> WinResult<()> {
     // SAFETY: DirectWrite rasterizes into a temporary D2D DC target. The resulting
     // grayscale coverage is composited into the premultiplied layered-window buffer.
     unsafe {
+        let layer_width = rect.right - rect.left;
+        let layer_height = rect.bottom - rect.top;
+        if layer_width <= 0 || layer_height <= 0 {
+            return Ok(());
+        }
         let face = utf16(style.face);
         let locale = utf16("zh-CN");
         let text_format = renderer.write_factory.CreateTextFormat(
@@ -2171,9 +2691,9 @@ unsafe fn draw_text_layer(
             style.pixel_height as f32,
             PCWSTR(locale.as_ptr()),
         )?;
-        text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-        text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        text_format.SetTextAlignment(alignment)?;
+        text_format.SetParagraphAlignment(paragraph)?;
+        text_format.SetWordWrapping(wrapping)?;
         let trimming = DWRITE_TRIMMING {
             granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
             delimiter: 0,
@@ -2186,7 +2706,7 @@ unsafe fn draw_text_layer(
 
         let screen_dc = GetDC(None);
         let memory_dc = CreateCompatibleDC(Some(screen_dc));
-        let bitmap_info = top_down_bitmap_info(width, height);
+        let bitmap_info = top_down_bitmap_info(layer_width, layer_height);
         let mut bits: *mut c_void = ptr::null_mut();
         let bitmap = CreateDIBSection(
             Some(screen_dc),
@@ -2196,7 +2716,11 @@ unsafe fn draw_text_layer(
             None,
             0,
         )?;
-        ptr::write_bytes(bits.cast::<u8>(), 0, (width * height * 4) as usize);
+        ptr::write_bytes(
+            bits.cast::<u8>(),
+            0,
+            (layer_width * layer_height * 4) as usize,
+        );
         let previous_bitmap = SelectObject(memory_dc, HGDIOBJ(bitmap.0));
         let render_properties = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -2215,8 +2739,8 @@ unsafe fn draw_text_layer(
         let full_rect = RECT {
             left: 0,
             top: 0,
-            right: width,
-            bottom: height,
+            right: layer_width,
+            bottom: layer_height,
         };
         render_target.BindDC(memory_dc, &full_rect)?;
         render_target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -2235,10 +2759,10 @@ unsafe fn draw_text_layer(
         };
         let brush = render_target.CreateSolidColorBrush(&white, None)?;
         let layout = D2D_RECT_F {
-            left: rect.left as f32,
-            top: rect.top as f32,
-            right: rect.right as f32,
-            bottom: rect.bottom as f32,
+            left: 0.0,
+            top: 0.0,
+            right: layer_width as f32,
+            bottom: layer_height as f32,
         };
         let utf16_text = text.encode_utf16().collect::<Vec<_>>();
         render_target.BeginDraw();
@@ -2253,10 +2777,13 @@ unsafe fn draw_text_layer(
         );
         render_target.EndDraw(None, None)?;
 
-        let mask = std::slice::from_raw_parts(bits.cast::<u8>(), (width * height * 4) as usize);
+        let mask = std::slice::from_raw_parts(
+            bits.cast::<u8>(),
+            (layer_width * layer_height * 4) as usize,
+        );
         for y in rect.top.max(0)..rect.bottom.min(height) {
             for x in rect.left.max(0)..rect.right.min(width) {
-                let offset = ((y * width + x) * 4) as usize;
+                let offset = (((y - rect.top) * layer_width + x - rect.left) * 4) as usize;
                 let coverage = mask[offset].max(mask[offset + 1]).max(mask[offset + 2]);
                 composite_pixel(pixels, width, x, y, style.color, coverage);
             }
