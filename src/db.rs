@@ -27,7 +27,9 @@ pub struct Database {
 
 #[derive(Clone, Debug)]
 pub struct NoteSummary {
+    pub id: String,
     pub title: String,
+    pub content: String,
     pub color: String,
 }
 
@@ -65,17 +67,27 @@ impl Database {
     }
 
     pub fn list_notes(&self) -> rusqlite::Result<Vec<NoteSummary>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT title, color FROM notes ORDER BY updated_at DESC, rowid ASC")?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, content, color FROM notes ORDER BY updated_at DESC, rowid ASC",
+        )?;
         statement
             .query_map([], |row| {
                 Ok(NoteSummary {
-                    title: row.get(0)?,
-                    color: row.get(1)?,
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    color: row.get(3)?,
                 })
             })?
             .collect()
+    }
+
+    pub fn update_note(&self, id: &str, title: &str, content: &str) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3 WHERE id = ?4",
+            (title, content, unix_timestamp(), id),
+        )?;
+        Ok(())
     }
 
     pub fn create_note(&self) -> rusqlite::Result<()> {
@@ -133,6 +145,19 @@ mod tests {
         let notes = database.list_notes().expect("新增后应能刷新便签列表");
         assert_eq!(notes.len(), 3);
         assert!(notes.iter().any(|note| note.title == "新便签"));
+
+        let edited_id = notes[0].id.clone();
+        database
+            .update_note(&edited_id, "编辑后的标题", "编辑后的正文")
+            .expect("应能保存便签内容");
+        let edited = database
+            .list_notes()
+            .expect("应能读取编辑后的便签")
+            .into_iter()
+            .find(|note| note.id == edited_id)
+            .expect("编辑后的便签应存在");
+        assert_eq!(edited.title, "编辑后的标题");
+        assert_eq!(edited.content, "编辑后的正文");
 
         for _ in 0..8 {
             database.create_note().expect("应能创建超过九张便签");
