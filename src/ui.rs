@@ -58,21 +58,23 @@ use windows::{
             },
             Input::KeyboardAndMouse::{GetFocus, ReleaseCapture, SetCapture, SetFocus},
             WindowsAndMessaging::{
-                CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
-                DestroyWindow, DispatchMessageW, EN_CHANGE, EN_KILLFOCUS, EN_SETFOCUS,
-                ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_NOHIDESEL, ES_WANTRETURN,
-                GetClientRect, GetCursorPos, GetMessageW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, HMENU, HTCAPTION, IDC_ARROW, IDC_HAND, IsWindowVisible, KillTimer,
-                LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_HIDE, SW_SHOW,
-                SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-                SendMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos,
-                SetWindowTextW, ShowWindow, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow,
-                WA_INACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_CLOSE, WM_COMMAND,
-                WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCLBUTTONDOWN,
-                WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD,
-                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-                WS_TABSTOP, WS_VISIBLE,
+                AppendMenuW, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu,
+                CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
+                EN_CHANGE, EN_KILLFOCUS, EN_SETFOCUS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
+                ES_NOHIDESEL, ES_WANTRETURN, GetClientRect, GetCursorPos, GetMessageW,
+                GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU, HTCAPTION, IDC_ARROW,
+                IDC_HAND, IDYES, IsWindowVisible, KillTimer, LoadCursorW, MB_DEFBUTTON2,
+                MB_ICONWARNING, MB_YESNO, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW,
+                PostQuitMessage, RegisterClassW, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
+                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageW, SetCursor,
+                SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+                TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, ULW_ALPHA,
+                UpdateLayeredWindow, WA_INACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE,
+                WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
+                WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NCLBUTTONDOWN, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT,
+                WM_TIMER, WNDCLASSW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -115,6 +117,8 @@ const EDITOR_BODY_ID: usize = 1002;
 const EDITOR_PLACEHOLDER_ID: usize = 1003;
 const EDITOR_TITLE_PLACEHOLDER_ID: usize = 1004;
 const EDITOR_SAVE_TIMER_ID: usize = 2;
+const NOTE_MENU_TOGGLE_PIN_ID: usize = 2001;
+const NOTE_MENU_DELETE_ID: usize = 2002;
 
 static DATABASE: OnceLock<Mutex<Database>> = OnceLock::new();
 static NOTES: OnceLock<Mutex<Vec<NoteSummary>>> = OnceLock::new();
@@ -143,6 +147,7 @@ static EDITOR_LOADING: AtomicBool = AtomicBool::new(false);
 static EDITOR_DIRTY: AtomicBool = AtomicBool::new(false);
 static EDITOR_CLOSING: AtomicBool = AtomicBool::new(false);
 static EDITOR_MINIMIZED_TO_LIST: AtomicBool = AtomicBool::new(false);
+static LIST_CONTEXT_MENU_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ACTIVE_NOTE_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ACTIVE_NOTE_COLOR: OnceLock<Mutex<String>> = OnceLock::new();
 
@@ -576,7 +581,7 @@ unsafe extern "system" fn list_window_proc(
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
-                close_app();
+                handle_list_context_menu(window, lparam);
                 LRESULT(0)
             }
             WM_DESTROY => LRESULT(0),
@@ -595,7 +600,9 @@ unsafe extern "system" fn editor_window_proc(
     unsafe {
         match message {
             WM_ACTIVATE if wparam.0 & 0xffff == WA_INACTIVE as usize => {
-                if !cursor_inside_editor_group(window) {
+                if !LIST_CONTEXT_MENU_ACTIVE.load(Ordering::Acquire)
+                    && !cursor_inside_editor_group(window)
+                {
                     close_note_editor(window);
                 }
                 LRESULT(0)
@@ -1925,7 +1932,11 @@ unsafe fn update_note_list_interaction(window: HWND) {
             EDITOR_MINIMIZED_TO_LIST.store(false, Ordering::Release);
         }
         let inside_minimized_bridge = cursor_inside_minimized_editor_bridge(cursor, bounds);
-        if !cursor_inside && !editor_is_visible() && !inside_minimized_bridge {
+        if !cursor_inside
+            && !editor_is_visible()
+            && !inside_minimized_bridge
+            && !LIST_CONTEXT_MENU_ACTIVE.load(Ordering::Acquire)
+        {
             hide_note_list(window);
         }
 
@@ -1995,24 +2006,13 @@ unsafe fn handle_list_click(window: HWND, lparam: LPARAM) {
     let y = (lparam.0 >> 16) as i16 as i32;
     // SAFETY: The window is valid and owned by this UI thread.
     unsafe {
-        let dpi = GetDpiForWindow(window);
-        let all_notes = current_notes();
-        let viewport = note_viewport(&all_notes, dpi);
-        let notes = &viewport.notes;
-        let progress = card_hover_progress(notes.len());
-        if let Some(index) = (0..notes.len()).rev().find(|index| {
-            let top =
-                scale_for_dpi(39 + *index as i32 * 48, dpi) + viewport.offset_y.round() as i32;
-            let left = card_left(*index, dpi, &progress);
-            x >= left
-                && y >= top
-                && y < top + scale_for_dpi(65, dpi)
-                && y < card_viewport_bottom(all_notes.len(), dpi)
-        }) {
-            open_note_editor(window, &notes[index]);
+        if let Some(note) = note_at_list_point(window, x, y) {
+            open_note_editor(window, &note);
             return;
         }
 
+        let dpi = GetDpiForWindow(window);
+        let all_notes = current_notes();
         let footer_top = footer_y(all_notes.len(), dpi);
         if x >= scale_for_dpi(15, dpi)
             && x < scale_for_dpi(73, dpi)
@@ -2020,6 +2020,107 @@ unsafe fn handle_list_click(window: HWND, lparam: LPARAM) {
             && y < footer_top + scale_for_dpi(40, dpi)
         {
             add_note();
+        }
+    }
+}
+
+unsafe fn note_at_list_point(window: HWND, x: i32, y: i32) -> Option<NoteSummary> {
+    // SAFETY: The list HWND is owned by the current UI thread.
+    unsafe {
+        let dpi = GetDpiForWindow(window);
+        let all_notes = current_notes();
+        let viewport = note_viewport(&all_notes, dpi);
+        let progress = card_hover_progress(viewport.notes.len());
+        (0..viewport.notes.len())
+            .rev()
+            .find(|index| {
+                let top =
+                    scale_for_dpi(39 + *index as i32 * 48, dpi) + viewport.offset_y.round() as i32;
+                let left = card_left(*index, dpi, &progress);
+                x >= left
+                    && y >= top
+                    && y < top + scale_for_dpi(65, dpi)
+                    && y < card_viewport_bottom(all_notes.len(), dpi)
+            })
+            .map(|index| viewport.notes[index].clone())
+    }
+}
+
+struct ListContextMenuGuard;
+
+impl ListContextMenuGuard {
+    fn new() -> Self {
+        LIST_CONTEXT_MENU_ACTIVE.store(true, Ordering::Release);
+        Self
+    }
+}
+
+impl Drop for ListContextMenuGuard {
+    fn drop(&mut self) {
+        LIST_CONTEXT_MENU_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+unsafe fn handle_list_context_menu(window: HWND, lparam: LPARAM) {
+    let x = lparam.0 as i16 as i32;
+    let y = (lparam.0 >> 16) as i16 as i32;
+    // SAFETY: Menu creation, tracking, and note mutations all run on the list UI thread.
+    unsafe {
+        let Some(note) = note_at_list_point(window, x, y) else {
+            return;
+        };
+        let _guard = ListContextMenuGuard::new();
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let pin_label = utf16(if note.is_pinned {
+            "取消置顶"
+        } else {
+            "置顶"
+        });
+        let delete_label = utf16("删除");
+        if AppendMenuW(
+            menu,
+            MF_STRING,
+            NOTE_MENU_TOGGLE_PIN_ID,
+            PCWSTR(pin_label.as_ptr()),
+        )
+        .is_err()
+            || AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).is_err()
+            || AppendMenuW(
+                menu,
+                MF_STRING,
+                NOTE_MENU_DELETE_ID,
+                PCWSTR(delete_label.as_ptr()),
+            )
+            .is_err()
+        {
+            let _ = DestroyMenu(menu);
+            return;
+        }
+
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_err() {
+            let _ = DestroyMenu(menu);
+            return;
+        }
+        let _ = SetForegroundWindow(window);
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            cursor.x,
+            cursor.y,
+            None,
+            window,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+
+        match command {
+            NOTE_MENU_TOGGLE_PIN_ID => set_note_pinned(&note, !note.is_pinned),
+            NOTE_MENU_DELETE_ID => confirm_and_delete_note(window, &note),
+            _ => {}
         }
     }
 }
@@ -2049,8 +2150,101 @@ fn add_note() {
         return;
     };
     drop(database);
+    apply_note_collection(updated_notes);
+}
+
+fn set_note_pinned(note: &NoteSummary, is_pinned: bool) {
+    let Some(database) = DATABASE.get() else {
+        return;
+    };
+    let Ok(database) = database.lock() else {
+        return;
+    };
+    if database.set_note_pinned(&note.id, is_pinned).is_err() {
+        return;
+    }
+    let Ok(updated_notes) = database.list_notes() else {
+        return;
+    };
+    drop(database);
+    apply_note_collection(updated_notes);
+}
+
+unsafe fn confirm_and_delete_note(window: HWND, note: &NoteSummary) {
+    let prompt = utf16(&format!(
+        "确定删除“{}”吗？\r\n\r\n删除后无法恢复。",
+        note_display_title(note)
+    ));
+    let caption = utf16("删除便签");
+    // SAFETY: Strings and owner HWND remain valid for the modal call.
+    let result = unsafe {
+        MessageBoxW(
+            Some(window),
+            PCWSTR(prompt.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        )
+    };
+    if result != IDYES {
+        return;
+    }
+
+    let Some(database) = DATABASE.get() else {
+        return;
+    };
+    let Ok(database) = database.lock() else {
+        return;
+    };
+    if database.delete_note(&note.id).is_err() {
+        return;
+    }
+    let Ok(updated_notes) = database.list_notes() else {
+        return;
+    };
+    drop(database);
+    // SAFETY: The editor, if it belongs to the deleted note, is owned by this UI thread.
+    unsafe { discard_deleted_note_editor(&note.id) };
+    apply_note_collection(updated_notes);
+}
+
+unsafe fn discard_deleted_note_editor(note_id: &str) {
+    let active_matches = ACTIVE_NOTE_ID
+        .get()
+        .and_then(|active_id| {
+            active_id
+                .lock()
+                .ok()
+                .map(|active_id| active_id.as_deref() == Some(note_id))
+        })
+        .unwrap_or(false);
+    if !active_matches {
+        return;
+    }
+    // SAFETY: The editor and timer belong to the current UI thread.
+    unsafe {
+        let editor = load_window(&EDITOR_WINDOW);
+        EDITOR_DIRTY.store(false, Ordering::Release);
+        EDITOR_MINIMIZED_TO_LIST.store(false, Ordering::Release);
+        if !editor.0.is_null() {
+            let _ = KillTimer(Some(editor), EDITOR_SAVE_TIMER_ID);
+            let _ = DestroyWindow(editor);
+        }
+        if let Some(active_id) = ACTIVE_NOTE_ID.get()
+            && let Ok(mut active_id) = active_id.lock()
+        {
+            *active_id = None;
+        }
+    }
+}
+
+fn apply_note_collection(updated_notes: Vec<NoteSummary>) {
     reset_list_scroll_animation();
     reset_card_hover_progress();
+    if let Some(cache) = LIST_RENDER_CACHE.get()
+        && let Ok(mut cache) = cache.lock()
+    {
+        *cache = None;
+    }
 
     if let Some(notes) = NOTES.get()
         && let Ok(mut notes) = notes.lock()
