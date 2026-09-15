@@ -5,7 +5,7 @@ use std::{
     ptr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering},
     },
     time::Instant,
 };
@@ -91,8 +91,9 @@ const CARD_HOVER_SHIFT_DIP: i32 = 9;
 const CARD_ANIMATION_DURATION_SECONDS: f32 = 0.15;
 const LIST_REVEAL_OFFSET_DIP: i32 = 18;
 const LIST_REVEAL_DURATION_SECONDS: f32 = 0.18;
-const LIST_SCROLL_ANIMATION_DURATION_SECONDS: f32 = 0.18;
-const LIST_SCROLL_SLIDE_DIP: i32 = 8;
+const LIST_ANIMATION_TIMER_MS: u32 = 10;
+const LIST_SCROLL_SMOOTH_TIME_SECONDS: f32 = 0.12;
+const LIST_SCROLL_STEP_DIP: i32 = 48;
 const UI_FONT_FACE: &str = "Microsoft YaHei UI";
 const SYMBOL_FONT_FACE: &str = "Segoe UI";
 const DECK_LABEL_FONT_DIP: i32 = 10;
@@ -120,7 +121,6 @@ static CARD_SPRITE_CACHE: OnceLock<Mutex<HashMap<CardSpriteKey, Arc<Vec<CardSpri
 static LIST_SCROLL_ANIMATION: OnceLock<Mutex<ListScrollAnimation>> = OnceLock::new();
 static PILL_WINDOW: AtomicIsize = AtomicIsize::new(0);
 static LIST_WINDOW: AtomicIsize = AtomicIsize::new(0);
-static LIST_SCROLL_OFFSET: AtomicUsize = AtomicUsize::new(0);
 static DRAGGING: AtomicBool = AtomicBool::new(false);
 static DRAG_OFFSET_Y: AtomicI32 = AtomicI32::new(0);
 static EDITOR_WINDOW: AtomicIsize = AtomicIsize::new(0);
@@ -216,18 +216,17 @@ struct ListRevealAnimation {
 }
 
 struct ListScrollAnimation {
-    progress: f32,
-    direction: i32,
-    highlighted_card: Option<usize>,
+    position: f32,
+    target: f32,
+    velocity: f32,
+    step: f32,
     last_tick: Instant,
     active: bool,
 }
 
-#[derive(Clone, Copy)]
-struct ListScrollVisual {
+struct NoteViewport {
+    notes: Vec<NoteSummary>,
     offset_y: f32,
-    highlighted_card: Option<usize>,
-    card_shift: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -243,6 +242,13 @@ struct ListRevealFrame {
 }
 
 impl ListRenderCache {
+    fn layout_matches(&self, width: i32, height: i32, dpi: u32, total_note_count: usize) -> bool {
+        self.width == width
+            && self.height == height
+            && self.dpi == dpi
+            && self.total_note_count == total_note_count
+    }
+
     fn matches(
         &self,
         width: i32,
@@ -251,10 +257,7 @@ impl ListRenderCache {
         notes: &[NoteSummary],
         total_note_count: usize,
     ) -> bool {
-        self.width == width
-            && self.height == height
-            && self.dpi == dpi
-            && self.total_note_count == total_note_count
+        self.layout_matches(width, height, dpi, total_note_count)
             && self.note_keys.len() == notes.len()
             && self
                 .note_keys
@@ -299,9 +302,10 @@ pub fn run(database: Database) -> Result<(), Box<dyn Error>> {
         .map_err(|_| std::io::Error::other("卡片缓存已初始化"))?;
     LIST_SCROLL_ANIMATION
         .set(Mutex::new(ListScrollAnimation {
-            progress: 1.0,
-            direction: 0,
-            highlighted_card: None,
+            position: 0.0,
+            target: 0.0,
+            velocity: 0.0,
+            step: LIST_SCROLL_STEP_DIP as f32,
             last_tick: Instant::now(),
             active: false,
         }))
@@ -365,8 +369,8 @@ pub fn run(database: Database) -> Result<(), Box<dyn Error>> {
         PILL_WINDOW.store(pill_window.0 as isize, Ordering::Release);
 
         let notes = current_notes();
-        let visible_notes = note_page(&notes);
-        let list_height = list_height(visible_notes.len(), dpi);
+        let viewport = note_viewport(&notes, dpi);
+        let list_height = list_height(notes.len(), dpi);
         let list_title = utf16("Noty 便签列表");
         let list_window = CreateWindowExW(
             WINDOW_EX_STYLE(
@@ -391,7 +395,7 @@ pub fn run(database: Database) -> Result<(), Box<dyn Error>> {
             scale_for_dpi(LIST_WIDTH_DIP, dpi),
             list_height,
             dpi,
-            &visible_notes,
+            &viewport.notes,
             notes.len(),
             255,
         )?;
@@ -974,7 +978,7 @@ unsafe fn save_active_note() {
     {
         *notes = updated_notes.clone();
     }
-    LIST_SCROLL_OFFSET.store(0, Ordering::Relaxed);
+    reset_list_scroll_animation();
     reset_card_hover_progress();
     if let Some(cache) = LIST_RENDER_CACHE.get()
         && let Ok(mut cache) = cache.lock()
@@ -992,13 +996,13 @@ unsafe fn refresh_windows_after_edit(notes: &[NoteSummary]) {
         if !list.0.is_null() && IsWindowVisible(list).as_bool() {
             let mut bounds = RECT::default();
             if GetWindowRect(list, &mut bounds).is_ok() {
-                let visible_notes = note_page(notes);
+                let viewport = note_viewport(notes, GetDpiForWindow(list));
                 let _ = render_note_list(
                     list,
                     bounds.right - bounds.left,
                     bounds.bottom - bounds.top,
                     GetDpiForWindow(list),
-                    &visible_notes,
+                    &viewport.notes,
                     notes.len(),
                     list_reveal_alpha(),
                 );
@@ -1368,8 +1372,8 @@ unsafe fn show_note_list(pill_window: HWND) {
         let dpi = GetDpiForWindow(pill_window);
         let width = scale_for_dpi(LIST_WIDTH_DIP, dpi);
         let notes = current_notes();
-        let visible_notes = note_page(&notes);
-        let height = list_height(visible_notes.len(), dpi);
+        let viewport = note_viewport(&notes, dpi);
+        let height = list_height(notes.len(), dpi);
         let final_x = work_area.right - width;
         let final_y = (center.y - height / 2).clamp(work_area.top, work_area.bottom - height);
         let initial_x = final_x + scale_for_dpi(LIST_REVEAL_OFFSET_DIP, dpi);
@@ -1390,12 +1394,12 @@ unsafe fn show_note_list(pill_window: HWND) {
             width,
             height,
             dpi,
-            &visible_notes,
+            &viewport.notes,
             notes.len(),
             0,
         );
         reset_animation_clock();
-        let _ = SetTimer(Some(list_window), 1, 16, None);
+        let _ = SetTimer(Some(list_window), 1, LIST_ANIMATION_TIMER_MS, None);
         let _ = ShowWindow(pill_window, SW_HIDE);
     }
 }
@@ -1404,7 +1408,7 @@ unsafe fn hide_note_list(list_window: HWND) {
     set_list_reveal_target(0.0);
     // SAFETY: The timer belongs to this list window and drives the closing frames.
     unsafe {
-        let _ = SetTimer(Some(list_window), 1, 16, None);
+        let _ = SetTimer(Some(list_window), 1, LIST_ANIMATION_TIMER_MS, None);
     }
 }
 
@@ -1413,6 +1417,7 @@ unsafe fn finish_hiding_note_list(list_window: HWND) {
     unsafe {
         let _ = KillTimer(Some(list_window), 1);
         let _ = ShowWindow(list_window, SW_HIDE);
+        reset_list_scroll_animation();
         reset_card_hover_progress();
         reset_animation_clock();
         let pill_window = load_window(&PILL_WINDOW);
@@ -1451,18 +1456,21 @@ unsafe fn update_note_list_interaction(window: HWND) {
         let x = frame.final_x
             + ((1.0 - eased_reveal) * scale_for_dpi(LIST_REVEAL_OFFSET_DIP, frame.dpi) as f32)
                 .round() as i32;
-        let _ = SetWindowPos(
-            window,
-            None,
-            x,
-            frame.final_y,
-            frame.width,
-            frame.height,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        );
+        if frame.changed {
+            let _ = SetWindowPos(
+                window,
+                None,
+                x,
+                frame.final_y,
+                frame.width,
+                frame.height,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
 
         let all_notes = current_notes();
-        let notes = note_page(&all_notes);
+        let viewport = note_viewport(&all_notes, frame.dpi);
+        let notes = &viewport.notes;
         let hovered = if !cursor_inside || frame.target == 0.0 {
             None
         } else {
@@ -1470,12 +1478,14 @@ unsafe fn update_note_list_interaction(window: HWND) {
             let local_y = cursor.y - frame.final_y;
             let progress = card_hover_progress(notes.len());
             (0..notes.len()).rev().find(|index| {
-                let top = scale_for_dpi(39 + *index as i32 * 48, frame.dpi);
+                let top = scale_for_dpi(39 + *index as i32 * 48, frame.dpi)
+                    + viewport.offset_y.round() as i32;
                 let left = card_left(*index, frame.dpi, &progress);
                 local_x >= left
                     && local_x < frame.width
                     && local_y >= top
                     && local_y < top + scale_for_dpi(65, frame.dpi)
+                    && local_y < card_viewport_bottom(all_notes.len(), frame.dpi)
             })
         };
         let cards_changed = advance_card_hover_progress(notes.len(), hovered);
@@ -1486,7 +1496,7 @@ unsafe fn update_note_list_interaction(window: HWND) {
                 frame.width,
                 frame.height,
                 frame.dpi,
-                &notes,
+                notes,
                 all_notes.len(),
                 alpha,
             );
@@ -1500,18 +1510,24 @@ unsafe fn handle_list_click(window: HWND, lparam: LPARAM) {
     // SAFETY: The window is valid and owned by this UI thread.
     unsafe {
         let dpi = GetDpiForWindow(window);
-        let notes = note_page(&current_notes());
+        let all_notes = current_notes();
+        let viewport = note_viewport(&all_notes, dpi);
+        let notes = &viewport.notes;
         let progress = card_hover_progress(notes.len());
         if let Some(index) = (0..notes.len()).rev().find(|index| {
-            let top = scale_for_dpi(39 + *index as i32 * 48, dpi);
+            let top =
+                scale_for_dpi(39 + *index as i32 * 48, dpi) + viewport.offset_y.round() as i32;
             let left = card_left(*index, dpi, &progress);
-            x >= left && y >= top && y < top + scale_for_dpi(65, dpi)
+            x >= left
+                && y >= top
+                && y < top + scale_for_dpi(65, dpi)
+                && y < card_viewport_bottom(all_notes.len(), dpi)
         }) {
             open_note_editor(window, &notes[index]);
             return;
         }
 
-        let footer_top = footer_y(notes.len(), dpi);
+        let footer_top = footer_y(all_notes.len(), dpi);
         if x >= scale_for_dpi(15, dpi)
             && x < scale_for_dpi(73, dpi)
             && y >= footer_top
@@ -1528,38 +1544,9 @@ unsafe fn scroll_note_list(window: HWND, wparam: WPARAM) {
         return;
     }
 
-    let all_notes = current_notes();
-    let max_offset = max_scroll_offset(all_notes.len());
-    if max_offset == 0 {
-        return;
-    }
-    let current = LIST_SCROLL_OFFSET.load(Ordering::Relaxed).min(max_offset);
-    let next = scroll_offset_after_delta(all_notes.len(), current, delta);
-    if next == current {
-        return;
-    }
-
-    LIST_SCROLL_OFFSET.store(next, Ordering::Relaxed);
-    reset_card_hover_progress();
-    reset_animation_clock();
-    let notes = note_page(&all_notes);
-    begin_list_scroll_animation(delta, notes.len());
-
-    // SAFETY: The wheel message and redraw execute on the list window's UI thread.
-    unsafe {
-        let mut bounds = RECT::default();
-        if GetWindowRect(window, &mut bounds).is_ok() {
-            let _ = render_note_list(
-                window,
-                bounds.right - bounds.left,
-                bounds.bottom - bounds.top,
-                GetDpiForWindow(window),
-                &notes,
-                all_notes.len(),
-                list_reveal_alpha(),
-            );
-        }
-    }
+    let note_count = current_notes().len();
+    let dpi = unsafe { GetDpiForWindow(window) };
+    update_list_scroll_target(delta, note_count, dpi);
 }
 
 fn add_note() {
@@ -1576,7 +1563,7 @@ fn add_note() {
         return;
     };
     drop(database);
-    LIST_SCROLL_OFFSET.store(0, Ordering::Relaxed);
+    reset_list_scroll_animation();
     reset_card_hover_progress();
 
     if let Some(notes) = NOTES.get()
@@ -1620,8 +1607,7 @@ fn add_note() {
             if GetWindowRect(list_window, &mut bounds).is_ok() {
                 let dpi = GetDpiForWindow(list_window);
                 let width = scale_for_dpi(LIST_WIDTH_DIP, dpi);
-                let visible_notes = note_page(&updated_notes);
-                let height = list_height(visible_notes.len(), dpi);
+                let height = list_height(updated_notes.len(), dpi);
                 let pill_window = load_window(&PILL_WINDOW);
                 let mut pill_bounds = RECT::default();
                 if pill_window.0.is_null() || GetWindowRect(pill_window, &mut pill_bounds).is_err()
@@ -1650,13 +1636,13 @@ fn add_note() {
             let dpi = GetDpiForWindow(list_window);
             let mut bounds = RECT::default();
             if GetWindowRect(list_window, &mut bounds).is_ok() {
-                let visible_notes = note_page(&updated_notes);
+                let viewport = note_viewport(&updated_notes, dpi);
                 let _ = render_note_list(
                     list_window,
                     bounds.right - bounds.left,
                     bounds.bottom - bounds.top,
                     dpi,
-                    &visible_notes,
+                    &viewport.notes,
                     updated_notes.len(),
                     list_reveal_alpha(),
                 );
@@ -1675,13 +1661,14 @@ unsafe fn refresh_note_list(window: HWND) {
         let mut bounds = RECT::default();
         if GetWindowRect(window, &mut bounds).is_ok() {
             let notes = current_notes();
-            let visible_notes = note_page(&notes);
+            let dpi = GetDpiForWindow(window);
+            let viewport = note_viewport(&notes, dpi);
             let _ = render_note_list(
                 window,
                 bounds.right - bounds.left,
                 bounds.bottom - bounds.top,
-                GetDpiForWindow(window),
-                &visible_notes,
+                dpi,
+                &viewport.notes,
                 notes.len(),
                 list_reveal_alpha(),
             );
@@ -1707,34 +1694,44 @@ unsafe fn render_note_list(
         .as_ref()
         .is_none_or(|cache| !cache.matches(width, height, dpi, notes, total_note_count));
     if needs_rebuild {
-        // SAFETY: Cache construction uses temporary GDI resources on this UI thread.
-        *cache_storage =
-            Some(unsafe { build_list_render_cache(width, height, dpi, notes, total_note_count)? });
+        let can_reuse_base = cache_storage
+            .as_ref()
+            .is_some_and(|cache| cache.layout_matches(width, height, dpi, total_note_count));
+        if can_reuse_base {
+            let card_sprites = unsafe { build_card_sprites(width, dpi, notes, None)? };
+            let cache = cache_storage
+                .as_mut()
+                .expect("render cache layout was just matched");
+            cache.note_keys = note_keys(notes);
+            cache.card_sprites = card_sprites;
+        } else {
+            // SAFETY: Cache construction uses temporary GDI resources on this UI thread.
+            *cache_storage = Some(unsafe {
+                build_list_render_cache(width, height, dpi, notes, total_note_count)?
+            });
+        }
     }
 
     let cache = cache_storage
         .as_ref()
         .expect("render cache was just created");
     let mut pixels = cache.base_pixels.clone();
-    let scroll_visual = list_scroll_visual(dpi);
+    let scroll_offset_y = note_viewport_offset(dpi);
     for (index, variants) in cache.card_sprites.iter().enumerate() {
-        let top = (scale_for_dpi(39 + index as i32 * 48, dpi) as f32 + scroll_visual.offset_y)
-            .round() as i32;
-        let mut shift = card_shift_f32(index, dpi, &progress);
-        if scroll_visual.highlighted_card == Some(index) {
-            shift = shift.max(scroll_visual.card_shift);
-        }
+        let top =
+            scale_for_dpi(39 + index as i32 * LIST_SCROLL_STEP_DIP, dpi) as f32 + scroll_offset_y;
+        let shift = card_shift_f32(index, dpi, &progress);
         composite_interpolated_card(
             &mut pixels,
             SIZE {
                 cx: width,
                 cy: height,
             },
-            variants,
+            variants.as_slice(),
             shift,
             top,
             scale_for_dpi(39, dpi),
-            footer_y(notes.len(), dpi),
+            card_viewport_bottom(total_note_count, dpi),
         );
     }
     drop(cache_storage);
@@ -1751,7 +1748,7 @@ unsafe fn build_list_render_cache(
     total_note_count: usize,
 ) -> WinResult<ListRenderCache> {
     let text_rasterizer = unsafe { TextRasterizer::new()? };
-    let mut base_pixels = render_list_base_shapes(width, height, dpi, notes.len());
+    let mut base_pixels = render_list_base_shapes(width, height, dpi, total_note_count);
     // SAFETY: Text is rasterized once into cached premultiplied buffers.
     unsafe {
         draw_text_layer(
@@ -1793,7 +1790,7 @@ unsafe fn build_list_render_cache(
             },
         )?;
 
-        let footer_top = footer_y(notes.len(), dpi);
+        let footer_top = footer_y(total_note_count, dpi);
         for (text, left, right) in [("+", 29, 62), ("›", 83, 116)] {
             draw_text_layer(
                 &text_rasterizer,
@@ -1817,9 +1814,29 @@ unsafe fn build_list_render_cache(
         }
     }
 
+    let card_sprites = unsafe { build_card_sprites(width, dpi, notes, Some(&text_rasterizer))? };
+
+    Ok(ListRenderCache {
+        width,
+        height,
+        dpi,
+        total_note_count,
+        note_keys: note_keys(notes),
+        base_pixels,
+        card_sprites,
+    })
+}
+
+unsafe fn build_card_sprites(
+    width: i32,
+    dpi: u32,
+    notes: &[NoteSummary],
+    shared_renderer: Option<&TextRasterizer>,
+) -> WinResult<Vec<Arc<Vec<CardSprite>>>> {
     let max_shift = scale_for_dpi(CARD_HOVER_SHIFT_DIP, dpi);
     let card_height = scale_for_dpi(65, dpi);
     let resting_width = width - scale_for_dpi(17, dpi);
+    let mut owned_renderer = None;
     let mut card_sprites = Vec::with_capacity(notes.len());
     for note in notes {
         let display_title = note_display_title(note);
@@ -1838,6 +1855,34 @@ unsafe fn build_list_render_cache(
             continue;
         }
 
+        if shared_renderer.is_none() && owned_renderer.is_none() {
+            owned_renderer = Some(unsafe { TextRasterizer::new()? });
+        }
+        let renderer = shared_renderer
+            .or(owned_renderer.as_ref())
+            .expect("a text renderer was created for an uncached card");
+        let mut text_pixels = vec![0_u8; (resting_width * card_height * 4) as usize];
+        unsafe {
+            draw_text_layer(
+                renderer,
+                &mut text_pixels,
+                resting_width,
+                card_height,
+                display_title,
+                RECT {
+                    left: scale_for_dpi(14, dpi),
+                    top: scale_for_dpi(6, dpi),
+                    right: resting_width - scale_for_dpi(13, dpi),
+                    bottom: scale_for_dpi(38, dpi),
+                },
+                TextStyle {
+                    face: UI_FONT_FACE,
+                    pixel_height: scale_for_dpi(CARD_LABEL_FONT_DIP, dpi),
+                    weight: MEDIUM_FONT_WEIGHT,
+                    color: Color::new(75, 71, 59),
+                },
+            )?;
+        }
         let mut variants = Vec::with_capacity((max_shift + 1) as usize);
         for shift in 0..=max_shift {
             let sprite_width = resting_width + shift;
@@ -1865,28 +1910,14 @@ unsafe fn build_list_render_cache(
                 scale_for_dpi(11, dpi) as f32,
                 fill,
             );
-            // SAFETY: The title is drawn into this sprite before it enters the cache.
-            unsafe {
-                draw_text_layer(
-                    &text_rasterizer,
-                    &mut sprite_pixels,
-                    sprite_width,
-                    card_height,
-                    display_title,
-                    RECT {
-                        left: scale_for_dpi(14, dpi),
-                        top: scale_for_dpi(6, dpi),
-                        right: sprite_width - scale_for_dpi(13, dpi),
-                        bottom: scale_for_dpi(38, dpi),
-                    },
-                    TextStyle {
-                        face: UI_FONT_FACE,
-                        pixel_height: scale_for_dpi(CARD_LABEL_FONT_DIP, dpi),
-                        weight: MEDIUM_FONT_WEIGHT,
-                        color: Color::new(75, 71, 59),
-                    },
-                )?;
-            }
+            composite_layer(
+                &mut sprite_pixels,
+                sprite_width,
+                card_height,
+                &text_pixels,
+                resting_width,
+                card_height,
+            );
             variants.push(CardSprite {
                 width: sprite_width,
                 height: card_height,
@@ -1901,19 +1932,14 @@ unsafe fn build_list_render_cache(
         }
         card_sprites.push(variants);
     }
+    Ok(card_sprites)
+}
 
-    Ok(ListRenderCache {
-        width,
-        height,
-        dpi,
-        total_note_count,
-        note_keys: notes
-            .iter()
-            .map(|note| (note.title.clone(), note.color.clone()))
-            .collect(),
-        base_pixels,
-        card_sprites,
-    })
+fn note_keys(notes: &[NoteSummary]) -> Vec<(String, String)> {
+    notes
+        .iter()
+        .map(|note| (note.title.clone(), note.color.clone()))
+        .collect()
 }
 
 fn render_list_base_shapes(width: i32, height: i32, dpi: u32, note_count: usize) -> Vec<u8> {
@@ -1961,7 +1987,7 @@ fn composite_interpolated_card(
     destination_size: SIZE,
     variants: &[CardSprite],
     shift: f32,
-    destination_y: i32,
+    destination_y: f32,
     clip_top: i32,
     clip_bottom: i32,
 ) {
@@ -1970,19 +1996,29 @@ fn composite_interpolated_card(
     let fraction = shift.fract();
     let left = destination_size.cx - lower.width.max(upper.width);
 
-    for source_y in 0..lower.height.max(upper.height) {
-        let target_y = destination_y + source_y;
+    let sprite_height = lower.height.max(upper.height);
+    let first_target_y = destination_y.floor() as i32;
+    let last_target_y = (destination_y + sprite_height as f32).ceil() as i32;
+    for target_y in first_target_y..last_target_y {
         if target_y < clip_top || target_y >= clip_bottom || target_y >= destination_size.cy {
             continue;
         }
+        let source_y = target_y as f32 - destination_y;
+        let source_y_lower = source_y.floor() as i32;
+        let source_y_upper = source_y_lower + 1;
+        let vertical_fraction = source_y - source_y_lower as f32;
         for target_x in left.max(0)..destination_size.cx {
             let target_offset = ((target_y * destination_size.cx + target_x) * 4) as usize;
             let lower_x = target_x - (destination_size.cx - lower.width);
             let upper_x = target_x - (destination_size.cx - upper.width);
             let mut interpolated = [0_u8; 4];
             for (channel, value) in interpolated.iter_mut().enumerate() {
-                let from = sprite_channel(lower, lower_x, source_y, channel) as f32;
-                let to = sprite_channel(upper, upper_x, source_y, channel) as f32;
+                let lower_from = sprite_channel(lower, lower_x, source_y_lower, channel) as f32;
+                let lower_to = sprite_channel(lower, lower_x, source_y_upper, channel) as f32;
+                let from = lower_from + (lower_to - lower_from) * vertical_fraction;
+                let upper_from = sprite_channel(upper, upper_x, source_y_lower, channel) as f32;
+                let upper_to = sprite_channel(upper, upper_x, source_y_upper, channel) as f32;
+                let to = upper_from + (upper_to - upper_from) * vertical_fraction;
                 *value = (from + (to - from) * fraction).round() as u8;
             }
             let alpha = interpolated[3] as u32;
@@ -2003,6 +2039,34 @@ fn sprite_channel(sprite: &CardSprite, x: i32, y: i32, channel: usize) -> u8 {
         return 0;
     }
     sprite.pixels[((y * sprite.width + x) * 4) as usize + channel]
+}
+
+fn composite_layer(
+    destination: &mut [u8],
+    destination_width: i32,
+    destination_height: i32,
+    source: &[u8],
+    source_width: i32,
+    source_height: i32,
+) {
+    for y in 0..source_height.min(destination_height) {
+        for x in 0..source_width.min(destination_width) {
+            let source_offset = ((y * source_width + x) * 4) as usize;
+            let alpha = source[source_offset + 3] as u32;
+            if alpha == 0 {
+                continue;
+            }
+            let destination_offset = ((y * destination_width + x) * 4) as usize;
+            let inverse = 255 - alpha;
+            for channel in 0..3 {
+                destination[destination_offset + channel] = (source[source_offset + channel] as u32
+                    + destination[destination_offset + channel] as u32 * inverse / 255)
+                    .min(255) as u8;
+            }
+            destination[destination_offset + 3] =
+                (alpha + destination[destination_offset + 3] as u32 * inverse / 255).min(255) as u8;
+        }
+    }
 }
 
 fn paint_rounded_rect(
@@ -2537,26 +2601,41 @@ fn max_scroll_offset(note_count: usize) -> usize {
     note_count.saturating_sub(LIST_VISIBLE_NOTE_LIMIT)
 }
 
-fn scroll_offset_after_delta(note_count: usize, current: usize, delta: i32) -> usize {
-    let max_offset = max_scroll_offset(note_count);
-    let current = current.min(max_offset);
-    let steps = (delta.unsigned_abs() as usize).div_ceil(120).max(1);
-    if delta > 0 {
-        current.saturating_sub(steps)
-    } else if delta < 0 {
-        current.saturating_add(steps).min(max_offset)
+fn max_scroll_position(note_count: usize, dpi: u32) -> f32 {
+    if note_count <= LIST_VISIBLE_NOTE_LIMIT {
+        return 0.0;
+    }
+    let content_height = note_count as i32 * scale_for_dpi(LIST_SCROLL_STEP_DIP, dpi);
+    let viewport_height = scale_for_dpi(258, dpi);
+    content_height.saturating_sub(viewport_height) as f32
+}
+
+fn note_viewport(notes: &[NoteSummary], dpi: u32) -> NoteViewport {
+    let (position, animation_step) = list_scroll_position();
+    let step = if animation_step > f32::EPSILON {
+        animation_step
     } else {
-        current
+        scale_for_dpi(LIST_SCROLL_STEP_DIP, dpi) as f32
+    };
+    let position = position.max(0.0);
+    let start = ((position / step).floor() as usize).min(max_scroll_offset(notes.len()));
+    let offset_y = -(position - start as f32 * step);
+    let end = (start + LIST_VISIBLE_NOTE_LIMIT + 1).min(notes.len());
+    NoteViewport {
+        notes: notes[start..end].to_vec(),
+        offset_y,
     }
 }
 
-fn note_page(notes: &[NoteSummary]) -> Vec<NoteSummary> {
-    let offset = LIST_SCROLL_OFFSET
-        .load(Ordering::Relaxed)
-        .min(max_scroll_offset(notes.len()));
-    LIST_SCROLL_OFFSET.store(offset, Ordering::Relaxed);
-    let end = (offset + LIST_VISIBLE_NOTE_LIMIT).min(notes.len());
-    notes[offset..end].to_vec()
+fn note_viewport_offset(dpi: u32) -> f32 {
+    let (position, animation_step) = list_scroll_position();
+    let step = if animation_step > f32::EPSILON {
+        animation_step
+    } else {
+        scale_for_dpi(LIST_SCROLL_STEP_DIP, dpi) as f32
+    };
+    let position = position.max(0.0);
+    -(position - (position / step).floor() * step)
 }
 
 fn card_hover_progress(note_count: usize) -> Vec<f32> {
@@ -2705,22 +2784,25 @@ fn ease_out_cubic(progress: f32) -> f32 {
     1.0 - (1.0 - progress).powi(3)
 }
 
-fn begin_list_scroll_animation(delta: i32, visible_note_count: usize) {
+fn update_list_scroll_target(delta: i32, note_count: usize, dpi: u32) {
     let Some(animation) = LIST_SCROLL_ANIMATION.get() else {
         return;
     };
     let Ok(mut animation) = animation.lock() else {
         return;
     };
-    animation.progress = 0.0;
-    animation.direction = if delta < 0 { 1 } else { -1 };
-    animation.highlighted_card = if delta < 0 {
-        visible_note_count.checked_sub(1)
-    } else if visible_note_count == 0 {
-        None
-    } else {
-        Some(0)
-    };
+    let step = scale_for_dpi(LIST_SCROLL_STEP_DIP, dpi) as f32;
+    let max_position = max_scroll_position(note_count, dpi);
+    if max_position <= f32::EPSILON {
+        return;
+    }
+    let wheel_distance = -(delta as f32 / 120.0) * step;
+    let next_target = (animation.target + wheel_distance).clamp(0.0, max_position);
+    if (next_target - animation.target).abs() <= f32::EPSILON {
+        return;
+    }
+    animation.target = next_target;
+    animation.step = step;
     animation.last_tick = Instant::now();
     animation.active = true;
 }
@@ -2737,48 +2819,77 @@ fn advance_list_scroll_animation() -> bool {
     }
 
     let now = Instant::now();
-    let step = now.duration_since(animation.last_tick).as_secs_f32()
-        / LIST_SCROLL_ANIMATION_DURATION_SECONDS;
+    let delta_seconds = now
+        .duration_since(animation.last_tick)
+        .as_secs_f32()
+        .clamp(0.0, 0.05);
     animation.last_tick = now;
-    animation.progress = (animation.progress + step).min(1.0);
-    if animation.progress >= 1.0 {
+    let old_start = (animation.position / animation.step).floor() as usize;
+    let omega = 2.0 / LIST_SCROLL_SMOOTH_TIME_SECONDS;
+    let x = omega * delta_seconds;
+    let decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+    let change = animation.position - animation.target;
+    let temporary = (animation.velocity + omega * change) * delta_seconds;
+    animation.velocity = (animation.velocity - omega * temporary) * decay;
+    animation.position = animation.target + (change + temporary) * decay;
+    if (animation.position - animation.target).abs() < 0.05 && animation.velocity.abs() < 0.5 {
+        animation.position = animation.target;
+        animation.velocity = 0.0;
         animation.active = false;
-        animation.highlighted_card = None;
+    }
+    let new_start = (animation.position / animation.step).floor() as usize;
+    drop(animation);
+    if old_start != new_start {
+        shift_card_hover_progress(old_start, new_start);
     }
     true
 }
 
-fn list_scroll_visual(dpi: u32) -> ListScrollVisual {
-    let Some(animation) = LIST_SCROLL_ANIMATION.get() else {
-        return ListScrollVisual {
-            offset_y: 0.0,
-            highlighted_card: None,
-            card_shift: 0.0,
-        };
+fn shift_card_hover_progress(old_start: usize, new_start: usize) {
+    let Some(progress) = CARD_HOVER_PROGRESS.get() else {
+        return;
     };
-    let Ok(animation) = animation.lock() else {
-        return ListScrollVisual {
-            offset_y: 0.0,
-            highlighted_card: None,
-            card_shift: 0.0,
-        };
+    let Ok(mut progress) = progress.lock() else {
+        return;
     };
-    if !animation.active {
-        return ListScrollVisual {
-            offset_y: 0.0,
-            highlighted_card: None,
-            card_shift: 0.0,
-        };
+    let old = progress.clone();
+    let count = old.len();
+    let mut shifted = vec![0.0; count];
+    if new_start > old_start {
+        let steps = (new_start - old_start).min(count);
+        shifted[..count - steps].copy_from_slice(&old[steps..]);
+    } else {
+        let steps = (old_start - new_start).min(count);
+        shifted[steps..].copy_from_slice(&old[..count - steps]);
     }
+    *progress = shifted;
+}
 
-    let remaining = 1.0 - ease_out_cubic(animation.progress);
-    ListScrollVisual {
-        offset_y: animation.direction as f32
-            * scale_for_dpi(LIST_SCROLL_SLIDE_DIP, dpi) as f32
-            * remaining,
-        highlighted_card: animation.highlighted_card,
-        card_shift: scale_for_dpi(CARD_HOVER_SHIFT_DIP, dpi) as f32 * remaining,
-    }
+fn list_scroll_position() -> (f32, f32) {
+    LIST_SCROLL_ANIMATION
+        .get()
+        .and_then(|animation| {
+            animation
+                .lock()
+                .ok()
+                .map(|animation| (animation.position, animation.step))
+        })
+        .unwrap_or((0.0, LIST_SCROLL_STEP_DIP as f32))
+}
+
+fn reset_list_scroll_animation() {
+    let Some(animation) = LIST_SCROLL_ANIMATION.get() else {
+        return;
+    };
+    let Ok(mut animation) = animation.lock() else {
+        return;
+    };
+    animation.position = 0.0;
+    animation.target = 0.0;
+    animation.velocity = 0.0;
+    animation.step = LIST_SCROLL_STEP_DIP as f32;
+    animation.active = false;
+    animation.last_tick = Instant::now();
 }
 
 fn card_left(index: usize, dpi: u32, progress: &[f32]) -> i32 {
@@ -2796,7 +2907,8 @@ fn card_shift_f32(index: usize, dpi: u32, progress: &[f32]) -> f32 {
 }
 
 fn list_height(note_count: usize, dpi: u32) -> i32 {
-    footer_y(note_count, dpi) + scale_for_dpi(58, dpi)
+    let logical_height = (note_count.min(5) as i32 * LIST_SCROLL_STEP_DIP + 114).max(210);
+    scale_for_dpi(logical_height, dpi)
 }
 
 fn pill_height(note_count: usize, dpi: u32) -> i32 {
@@ -2806,12 +2918,11 @@ fn pill_height(note_count: usize, dpi: u32) -> i32 {
 }
 
 fn footer_y(note_count: usize, dpi: u32) -> i32 {
-    let y = if note_count == 0 {
-        51
-    } else {
-        39 + (note_count.saturating_sub(1) as i32 * 48) + 65 + 12
-    };
-    scale_for_dpi(y, dpi)
+    list_height(note_count, dpi) - scale_for_dpi(48, dpi)
+}
+
+fn card_viewport_bottom(note_count: usize, dpi: u32) -> i32 {
+    list_height(note_count, dpi) - scale_for_dpi(58, dpi)
 }
 
 fn card_colors(color: &str) -> (Color, Color) {
@@ -2961,9 +3072,19 @@ mod tests {
         assert_eq!(max_scroll_offset(6), 0);
         assert_eq!(max_scroll_offset(7), 1);
         assert_eq!(max_scroll_offset(12), 6);
-        assert_eq!(scroll_offset_after_delta(12, 0, -120), 1);
-        assert_eq!(scroll_offset_after_delta(12, 1, 120), 0);
-        assert_eq!(scroll_offset_after_delta(12, 2, -240), 4);
-        assert_eq!(scroll_offset_after_delta(12, 6, -120), 6);
+        assert_eq!(max_scroll_position(6, 96), 0.0);
+        assert_eq!(max_scroll_position(7, 96), 78.0);
+        assert_eq!(max_scroll_position(12, 96), 318.0);
+    }
+
+    #[test]
+    fn list_viewport_matches_reference_geometry() {
+        assert_eq!(list_height(2, 96), 210);
+        assert_eq!(list_height(3, 96), 258);
+        assert_eq!(list_height(4, 96), 306);
+        assert_eq!(list_height(5, 96), 354);
+        assert_eq!(list_height(20, 96), 354);
+        assert_eq!(card_viewport_bottom(20, 96), 296);
+        assert_eq!(footer_y(20, 96), 306);
     }
 }
