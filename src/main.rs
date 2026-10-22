@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod db;
+mod startup;
 mod ui;
 
 use std::{error::Error, path::PathBuf};
@@ -12,6 +13,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let database_path = database_path()?;
     let database = Database::open(&database_path)?;
     database.ensure_starter_notes()?;
+    if let Err(error) = startup::enable_for_current_user() {
+        startup::report_failure(&error);
+    }
 
     ui::run(database)?;
 

@@ -156,6 +156,7 @@ dependencies = [
  "directories",
  "rusqlite",
  "windows",
+ "windows-numerics",
 ]
 
 [[package]]
